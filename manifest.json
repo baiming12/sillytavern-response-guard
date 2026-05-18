@@ -1,0 +1,10 @@
+{
+  "display_name": "Response Guard",
+  "loading_order": 10,
+  "js": "index.js",
+  "css": "style.css",
+  "author": "baiming12",
+  "version": "0.1.0",
+  "homePage": "https://github.com/baiming12/sillytavern-response-guard",
+  "auto_update": false
+}

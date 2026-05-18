@@ -1,0 +1,48 @@
+.response-guard-settings {
+  margin-bottom: 0.75rem;
+}
+
+.response-guard-help {
+  margin-top: 0;
+  opacity: 0.9;
+}
+
+.response-guard-settings textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.response-guard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.response-guard-custom-api {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.response-guard-model-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+}
+
+.response-guard-custom-api.hidden {
+  display: none;
+}
+
+.response-guard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+}
+
+.response-guard-note {
+  margin-top: 0.75rem;
+  opacity: 0.8;
+}
