@@ -244,7 +244,13 @@ async function runJudge(reply) {
 }
 
 async function appendMissingText(index, message, appendText) {
-    const { saveChat, updateMessageBlock } = getContext();
+    const {
+        chat,
+        eventSource,
+        eventTypes,
+        saveChat,
+        updateMessageBlock,
+    } = getContext();
     const separator = message.mes.endsWith('\n') ? '\n' : '\n\n';
     const nextText = `${message.mes.trimEnd()}${separator}${appendText.trim()}`;
 
@@ -258,8 +264,10 @@ async function appendMissingText(index, message, appendText) {
         delete message.extra.display_text;
     }
 
+    await eventSource.emit(eventTypes.MESSAGE_EDITED, index);
     await saveChat();
-    updateMessageBlock(index, message);
+    updateMessageBlock(index, chat[index] ?? message);
+    await eventSource.emit(eventTypes.MESSAGE_UPDATED, index);
 }
 
 function describeMissing(result) {
