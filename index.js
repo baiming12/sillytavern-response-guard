@@ -1,4 +1,11 @@
 const MODULE_NAME = 'response_guard';
+const EXTENSION_FOLDER_NAME = decodeURIComponent(
+    new URL('.', import.meta.url).pathname
+        .split('/')
+        .filter(Boolean)
+        .at(-1),
+);
+const EXTENSION_TEMPLATE_PATH = `third-party/${EXTENSION_FOLDER_NAME}`;
 
 const DEFAULT_SETTINGS = Object.freeze({
     rules: `每条回复末尾必须包含：
@@ -440,7 +447,7 @@ function bindSettingsEvents() {
 
 async function init() {
     const { renderExtensionTemplateAsync } = getContext();
-    const html = await renderExtensionTemplateAsync('third-party/response-guard', 'settings');
+    const html = await renderExtensionTemplateAsync(EXTENSION_TEMPLATE_PATH, 'settings');
 
     document.querySelector('#extensions_settings2')?.insertAdjacentHTML('beforeend', html);
     bindSettingsEvents();
