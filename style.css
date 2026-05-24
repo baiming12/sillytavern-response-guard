@@ -7,9 +7,48 @@
   opacity: 0.9;
 }
 
+.response-guard-settings label {
+  display: block;
+  margin-top: 0.75rem;
+}
+
 .response-guard-settings textarea {
   width: 100%;
   resize: vertical;
+}
+
+.response-guard-card {
+  border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor, #8a8a8a) 58%, transparent);
+  border-radius: 14px;
+  padding: 0.75rem;
+  margin: 0.75rem 0;
+  background: color-mix(
+    in srgb,
+    var(--SmartThemeBlurTintColor, var(--SmartThemeChatTintColor, #f5f5f5)) 92%,
+    var(--SmartThemeQuoteColor, #8d78ff) 8%
+  );
+  color: var(--SmartThemeBodyColor, inherit);
+  box-shadow: 0 3px 12px color-mix(in srgb, var(--SmartThemeShadowColor, #000) 10%, transparent);
+}
+
+.response-guard-section-title {
+  font-weight: 700;
+  margin-bottom: 0.55rem;
+  opacity: 0.95;
+}
+
+.response-guard-profile-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.response-guard-binding-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
 }
 
 .response-guard-grid {
@@ -31,18 +70,214 @@
   gap: 0.5rem;
 }
 
-.response-guard-custom-api.hidden {
+.response-guard-custom-api.hidden,
+#response_guard_model_picker.hidden {
   display: none;
 }
 
 .response-guard-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 0.9rem;
+  gap: 0.65rem;
+  margin-top: 1rem;
 }
 
 .response-guard-note {
   margin-top: 0.75rem;
   opacity: 0.8;
+  line-height: 1.55;
+}
+
+.response-guard-note.compact {
+  margin-top: 0.5rem;
+}
+
+.response-guard-btn,
+.response-guard-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  border-radius: 12px;
+  min-height: 38px;
+  padding: 0.45rem 0.9rem;
+  white-space: nowrap;
+  line-height: 1.2;
+  writing-mode: horizontal-tb;
+  text-orientation: mixed;
+  transition: transform 120ms ease, filter 120ms ease, opacity 120ms ease, box-shadow 120ms ease;
+}
+
+.response-guard-btn:hover,
+.response-guard-primary:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.06);
+}
+
+.response-guard-btn:disabled,
+.response-guard-primary:disabled {
+  transform: none;
+  opacity: 0.55;
+}
+
+.response-guard-btn {
+  border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor, #8a8a8a) 65%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--SmartThemeBlurTintColor, var(--SmartThemeChatTintColor, #f5f5f5)) 88%,
+    var(--SmartThemeBodyColor, #222) 12%
+  );
+  color: var(--SmartThemeBodyColor, inherit);
+}
+
+.response-guard-primary {
+  border: 1px solid color-mix(in srgb, var(--SmartThemeQuoteColor, #8d78ff) 68%, var(--SmartThemeBorderColor, #8a8a8a) 32%);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--SmartThemeQuoteColor, #8d78ff) 82%, var(--SmartThemeBlurTintColor, #ffffff) 18%),
+    color-mix(in srgb, var(--SmartThemeQuoteColor, #8d78ff) 58%, var(--SmartThemeChatTintColor, #202124) 42%)
+  );
+  color: var(--SmartThemeBodyColor, inherit);
+  font-weight: 700;
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--SmartThemeQuoteColor, #8d78ff) 20%, transparent);
+}
+
+.response-guard-actions .response-guard-primary {
+  padding-inline: 1rem;
+}
+
+.response-guard-actions i {
+  margin-right: 0.15rem;
+}
+
+.response-guard-btn.danger {
+  opacity: 0.88;
+}
+
+@media (max-width: 680px) {
+  .response-guard-profile-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  #response_guard_profile_picker {
+    grid-column: 1 / -1;
+  }
+
+  .response-guard-grid,
+  .response-guard-model-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.response-guard-help.compact {
+  margin: 0 0 0.65rem;
+  line-height: 1.55;
+}
+
+.response-guard-induction-card {
+  margin-top: 0.9rem;
+}
+
+.response-guard-actions.compact {
+  margin-top: 0.75rem;
+}
+
+.response-guard-induction-card textarea {
+  min-height: 88px;
+}
+
+@media (max-width: 680px) {
+  .response-guard-actions.compact {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 0.22: 功能区默认折叠；折叠态改成浅色/半透明卡片，避免浅色主题里变成灰底黑字 */
+.response-guard-fold {
+  padding: 0;
+  overflow: hidden;
+}
+
+.response-guard-fold-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.4rem 0.65rem;
+  align-items: center;
+  padding: 0.78rem 0.9rem;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  min-height: 56px;
+}
+
+.response-guard-fold-summary::-webkit-details-marker {
+  display: none;
+}
+
+.response-guard-fold-summary::after {
+  content: "▾";
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  opacity: 0.72;
+  transition: transform 160ms ease;
+}
+
+.response-guard-fold[open] > .response-guard-fold-summary::after {
+  transform: rotate(180deg);
+}
+
+.response-guard-fold-summary > span {
+  font-weight: 700;
+  opacity: 0.96;
+}
+
+.response-guard-fold-summary > small {
+  grid-column: 1;
+  opacity: 0.68;
+  line-height: 1.35;
+}
+
+.response-guard-fold-content {
+  padding: 0 0.9rem 0.9rem;
+  border-top: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor, #8a8a8a) 36%, transparent);
+}
+
+.response-guard-label-topless {
+  margin-top: 0 !important;
+}
+
+.response-guard-fold-content > .response-guard-grid:first-child {
+  margin-top: 0;
+}
+
+.response-guard-main-actions {
+  display: grid;
+  grid-template-columns: minmax(112px, 0.75fr) minmax(172px, 1.25fr);
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+  padding-top: 0.15rem;
+}
+
+.response-guard-main-actions > .response-guard-btn,
+.response-guard-main-actions > .response-guard-primary {
+  width: 100%;
+  min-height: 46px;
+  font-size: 0.98rem;
+}
+
+@media (max-width: 420px) {
+  .response-guard-main-actions {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 680px) {
+  .response-guard-fold-summary {
+    grid-template-columns: minmax(0, 1fr) 1.25rem;
+  }
+}
+
+.response-guard-fold-summary::marker {
+  content: "";
 }
