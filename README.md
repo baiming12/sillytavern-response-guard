@@ -101,6 +101,7 @@ SillyTavern/data/<你的用户>/extensions/response-guard
 - 修正归纳结果框可能停留在文本末尾、看起来像只剩后半段的问题；自定义 API 归纳请求提高输出上限，并在触发长度限制时提示。
 - 新增“局部修改最新回复”折叠模块，支持输入修改要求、生成完整修改预览、复制结果，并在确认后覆盖最新回复当前 swipe。
 - 新增聊天界面魔法棒菜单入口：“Response Guard：补齐格式”和“Response Guard：局部修改”。
+- 修复手机端从魔法棒打开“局部修改”时，弹窗可能被挤到页面顶部且高度异常的问题。
 - 新增 `window.ResponseGuard` 脚本接口：`checkOnly()`、`checkAndFix()`、`openRewriteDialog()`、`rewriteLatest(instruction, options)`。
 
 

@@ -380,3 +380,80 @@
     border-radius: 14px;
   }
 }
+
+/* 0.22: 手机端魔法棒局部修改弹窗修复
+   避免 textarea 自动聚焦触发键盘后，把 fixed 弹窗压到页面顶部且高度异常。 */
+body.response-guard-modal-open {
+  overflow: hidden;
+  touch-action: none;
+}
+
+.response-guard-modal-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.response-guard-modal-card > label,
+.response-guard-modal-card > .response-guard-actions {
+  flex: 0 0 auto;
+}
+
+#response_guard_quick_rewrite_instruction {
+  min-height: 110px;
+}
+
+#response_guard_quick_rewrite_result {
+  min-height: 220px;
+}
+
+@media (max-width: 700px) {
+  .response-guard-modal {
+    align-items: center;
+    justify-content: center;
+    padding: max(0.5rem, env(safe-area-inset-top)) max(0.5rem, env(safe-area-inset-right)) max(0.5rem, env(safe-area-inset-bottom)) max(0.5rem, env(safe-area-inset-left));
+    min-height: 100dvh;
+  }
+
+  .response-guard-modal-card {
+    width: min(100%, 680px);
+    height: auto;
+    max-height: calc(100dvh - max(1rem, env(safe-area-inset-top)) - max(1rem, env(safe-area-inset-bottom)));
+    min-height: min(620px, calc(100dvh - 1rem));
+    overflow: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 16px;
+    padding: 0.9rem;
+  }
+
+  .response-guard-modal-header {
+    position: sticky;
+    top: -0.9rem;
+    z-index: 1;
+    padding-top: 0.1rem;
+    padding-bottom: 0.6rem;
+    background: color-mix(
+      in srgb,
+      var(--SmartThemeBlurTintColor, var(--SmartThemeChatTintColor, #f5f5f5)) 96%,
+      var(--SmartThemeQuoteColor, #8d78ff) 4%
+    );
+  }
+
+  #response_guard_quick_rewrite_instruction {
+    min-height: 120px;
+  }
+
+  #response_guard_quick_rewrite_result {
+    min-height: 260px;
+  }
+}
+
+@media (max-width: 420px) {
+  .response-guard-modal-card {
+    min-height: min(560px, calc(100dvh - 1rem));
+  }
+
+  #response_guard_quick_rewrite_result {
+    min-height: 220px;
+  }
+}

@@ -884,6 +884,10 @@ function ensureRewriteQuickDialog() {
     return dialog;
 }
 
+function isSmallTouchScreen() {
+    return window.matchMedia?.('(max-width: 700px), (hover: none) and (pointer: coarse)')?.matches || false;
+}
+
 function openRewriteQuickDialog() {
     const profile = getActiveProfile();
     const latest = getLatestAssistantMessage();
@@ -894,6 +898,7 @@ function openRewriteQuickDialog() {
     }
 
     const dialog = ensureRewriteQuickDialog();
+    const cardEl = dialog.querySelector('.response-guard-modal-card');
     const instructionEl = dialog.querySelector('#response_guard_quick_rewrite_instruction');
     const resultEl = dialog.querySelector('#response_guard_quick_rewrite_result');
 
@@ -907,12 +912,25 @@ function openRewriteQuickDialog() {
     }
 
     dialog.classList.remove('hidden');
-    setTimeout(() => instructionEl?.focus(), 30);
+    document.body.classList.add('response-guard-modal-open');
+
+    // 手机 WebView 里自动 focus 会弹出键盘，并把 fixed 弹窗挤到页面最上方/压得很矮。
+    // 因此移动端只打开弹窗，不主动聚焦；桌面端保留聚焦体验。
+    requestAnimationFrame(() => {
+        if (cardEl) {
+            cardEl.scrollTop = 0;
+        }
+
+        if (!isSmallTouchScreen()) {
+            instructionEl?.focus();
+        }
+    });
 }
 
 function closeRewriteQuickDialog() {
     const dialog = document.querySelector('#response_guard_quick_rewrite_dialog');
     dialog?.classList.add('hidden');
+    document.body.classList.remove('response-guard-modal-open');
 }
 
 async function rewriteLatestWithInstruction(instruction, { apply = false } = {}) {
