@@ -22,6 +22,8 @@ const DEFAULT_PROFILE = Object.freeze({
     inductionExample: '',
     inductionRequirement: '',
     inductionResult: '',
+    rewriteInstruction: '',
+    rewriteResult: '',
 });
 
 const DEFAULT_SETTINGS = Object.freeze({
@@ -55,6 +57,8 @@ function normalizeProfile(profile = {}) {
         inductionExample: typeof profile.inductionExample === 'string' ? profile.inductionExample : '',
         inductionRequirement: typeof profile.inductionRequirement === 'string' ? profile.inductionRequirement : '',
         inductionResult: typeof profile.inductionResult === 'string' ? profile.inductionResult : '',
+        rewriteInstruction: typeof profile.rewriteInstruction === 'string' ? profile.rewriteInstruction : '',
+        rewriteResult: typeof profile.rewriteResult === 'string' ? profile.rewriteResult : '',
     };
 }
 
@@ -226,10 +230,37 @@ ${moduleRequirement}
 MODULE_REQUIREMENT>>>`;
 }
 
+
+function buildRewritePrompt({ reply, instruction }) {
+    return `你是 SillyTavern 最新回复的局部改写助手。
+
+你的任务：
+根据“修改要求”，对“最新回复”进行局部修改，输出修改后的完整最新回复。
+
+强制要求：
+1. 只修改用户明确不满意或要求调整的部分，例如内心戏语气、某段写法、某个动作描写、某处措辞、某个模块内容。
+2. 未被要求修改的正文、标签、结构、变量块、总结、选项、换行和顺序应尽量原样保留。
+3. 如果修改要求只针对中间一段，也必须输出“完整回复”，不能只输出片段或差异说明。
+4. 不要新建消息，不要续写后续剧情，不要添加解释、前言、后记、Markdown 代码块或“修改如下”。
+5. 不要把回复改成摘要，不要删掉格式模块；除非修改要求明确要求删除或重排某个模块。
+6. 如果最新回复中存在 XML/HTML 风格标签，例如 <content>、<details>、<choice>、<UpdateVariable>，必须保持标签成对、嵌套正确，不能让标签误包住正文。
+7. 输出必须只有修改后的完整回复正文。
+
+修改要求：
+<<<INSTRUCTION
+${instruction}
+INSTRUCTION>>>
+
+最新回复：
+<<<REPLY
+${reply}
+REPLY>>>`;
+}
+
 function stripCodeFence(text) {
     return String(text ?? '')
         .trim()
-        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/^```[\w-]*\s*/i, '')
         .replace(/\s*```$/i, '')
         .trim();
 }
@@ -255,6 +286,44 @@ function parseJudgeResult(rawText) {
         console.warn('[Response Guard] Failed to parse JSON response:', rawText, error);
         throw new Error('检查结果不是有效 JSON。请再点一次，或把规则写得更明确。');
     }
+}
+
+function getChoiceText(choice) {
+    const messageContent = choice?.message?.content;
+    if (typeof messageContent === 'string') {
+        return messageContent;
+    }
+
+    if (Array.isArray(messageContent)) {
+        return messageContent
+            .map((part) => typeof part === 'string' ? part : part?.text || '')
+            .join('');
+    }
+
+    if (typeof choice?.text === 'string') {
+        return choice.text;
+    }
+
+    return '';
+}
+
+function isLengthLimited(choice) {
+    const finishReason = String(choice?.finish_reason || choice?.finishReason || '').toLowerCase();
+    return finishReason === 'length' || finishReason === 'max_tokens' || finishReason === 'content_filter_length';
+}
+
+function focusTextareaStart(textarea) {
+    if (!textarea) {
+        return;
+    }
+
+    try {
+        textarea.setSelectionRange(0, 0);
+    } catch (_) {
+        // Some mobile WebViews can throw if the element is not focusable yet.
+    }
+
+    textarea.scrollTop = 0;
 }
 
 async function generateWithCurrentApi(prompt) {
@@ -285,13 +354,29 @@ function normalizeModelsUrl(baseUrl) {
     return `${trimmed}/models`;
 }
 
-async function generateWithCustomApi(prompt, profile) {
+async function generateWithCustomApi(prompt, profile, options = {}) {
     if (!profile.customBaseUrl.trim()) {
         throw new Error('请先填写自定义 API 地址。');
     }
 
     if (!profile.customModel.trim()) {
         throw new Error('请先填写模型名。');
+    }
+
+    const payload = {
+        model: profile.customModel.trim(),
+        temperature: Number(profile.temperature) || DEFAULT_PROFILE.temperature,
+        stream: false,
+        messages: [
+            {
+                role: 'user',
+                content: prompt,
+            },
+        ],
+    };
+
+    if (Number.isFinite(options.maxTokens) && options.maxTokens > 0) {
+        payload.max_tokens = Math.floor(options.maxTokens);
     }
 
     const response = await fetch(normalizeChatCompletionsUrl(profile.customBaseUrl), {
@@ -302,16 +387,7 @@ async function generateWithCustomApi(prompt, profile) {
                 ? { Authorization: `Bearer ${profile.customApiKey.trim()}` }
                 : {}),
         },
-        body: JSON.stringify({
-            model: profile.customModel.trim(),
-            temperature: Number(profile.temperature) || DEFAULT_PROFILE.temperature,
-            messages: [
-                {
-                    role: 'user',
-                    content: prompt,
-                },
-            ],
-        }),
+        body: JSON.stringify(payload),
     });
 
     if (!response.ok) {
@@ -320,10 +396,17 @@ async function generateWithCustomApi(prompt, profile) {
     }
 
     const data = await response.json();
-    const text = data?.choices?.[0]?.message?.content;
+    const choice = data?.choices?.[0];
+    const text = getChoiceText(choice);
 
     if (typeof text !== 'string' || !text.trim()) {
         throw new Error('自定义 API 没有返回可用文本。');
+    }
+
+    if (isLengthLimited(choice)) {
+        const actionName = options.actionName || '模型输出';
+        const lengthTip = options.lengthTip || '请缩短输入，或换用输出上限更高的模型。';
+        throw new Error(`${actionName}达到长度上限，结果可能被截断。${lengthTip}`);
     }
 
     return text;
@@ -369,7 +452,7 @@ async function runJudge(reply) {
     });
 
     const rawText = profile.apiMode === 'custom'
-        ? await generateWithCustomApi(prompt, profile)
+        ? await generateWithCustomApi(prompt, profile, { maxTokens: 1024 })
         : await generateWithCurrentApi(prompt);
 
     return parseJudgeResult(rawText);
@@ -380,7 +463,11 @@ async function runInduction({ exampleReply, moduleRequirement }) {
     const profile = getActiveProfile();
     const prompt = buildInductionPrompt({ exampleReply, moduleRequirement });
     const rawText = profile.apiMode === 'custom'
-        ? await generateWithCustomApi(prompt, profile)
+        ? await generateWithCustomApi(prompt, profile, {
+            maxTokens: 4096,
+            actionName: '归纳结果',
+            lengthTip: '请缩短“正确回复样例”，或把样例里无关剧情删掉后再生成。',
+        })
         : await generateWithCurrentApi(prompt);
     const result = stripCodeFence(rawText);
 
@@ -389,6 +476,56 @@ async function runInduction({ exampleReply, moduleRequirement }) {
     }
 
     return result.trim();
+}
+
+
+async function runRewrite({ reply, instruction }) {
+    const profile = getActiveProfile();
+    const prompt = buildRewritePrompt({ reply, instruction });
+    const rawText = profile.apiMode === 'custom'
+        ? await generateWithCustomApi(prompt, profile, {
+            maxTokens: 8192,
+            actionName: '局部修改结果',
+            lengthTip: '请缩短最新回复或修改要求，或改用输出上限更高的模型。',
+        })
+        : await generateWithCurrentApi(prompt);
+    const result = stripCodeFence(rawText);
+
+    if (!result.trim()) {
+        throw new Error('局部修改模块没有返回可用文本。');
+    }
+
+    return result.trim();
+}
+
+async function replaceMessageText(index, message, nextText) {
+    const {
+        chat,
+        eventSource,
+        eventTypes,
+        saveChat,
+        updateMessageBlock,
+    } = getContext();
+
+    const cleanText = String(nextText || '').trim();
+    if (!cleanText) {
+        throw new Error('没有可写入的回复内容。');
+    }
+
+    message.mes = cleanText;
+
+    if (Array.isArray(message.swipes) && Number.isInteger(message.swipe_id)) {
+        message.swipes[message.swipe_id] = cleanText;
+    }
+
+    if (message.extra?.display_text) {
+        delete message.extra.display_text;
+    }
+
+    await eventSource.emit(eventTypes.MESSAGE_EDITED, index);
+    await saveChat();
+    updateMessageBlock(index, chat[index] ?? message);
+    await eventSource.emit(eventTypes.MESSAGE_UPDATED, index);
 }
 
 async function appendMissingText(index, message, appendText) {
@@ -519,6 +656,7 @@ async function induceFormatGuidance() {
 
         if (resultEl) {
             resultEl.value = guidance;
+            focusTextareaStart(resultEl);
         }
 
         saveSettings();
@@ -574,6 +712,399 @@ async function copyInductionResult() {
         console.error('[Response Guard] Copy failed:', error);
         toastr.error('复制失败，请手动选中结果复制。');
     }
+}
+
+
+async function generateRewritePreview() {
+    const profile = getActiveProfile();
+    const latest = getLatestAssistantMessage();
+    const instructionEl = document.querySelector('#response_guard_rewrite_instruction');
+    const resultEl = document.querySelector('#response_guard_rewrite_result');
+    const buttonEl = document.querySelector('#response_guard_generate_rewrite');
+
+    if (!latest) {
+        toastr.warning('没有找到可修改的最新 AI 回复。');
+        return;
+    }
+
+    const instruction = String(instructionEl?.value || '').trim();
+    if (!instruction) {
+        toastr.warning('请先填写你想修改哪里、怎么修改。');
+        return;
+    }
+
+    buttonEl?.setAttribute('disabled', 'disabled');
+
+    try {
+        toastr.info(`正在用「${profile.name}」生成局部修改预览…`);
+        const rewritten = await runRewrite({ reply: latest.message.mes, instruction });
+        profile.rewriteInstruction = instruction;
+        profile.rewriteResult = rewritten;
+
+        if (resultEl) {
+            resultEl.value = rewritten;
+            focusTextareaStart(resultEl);
+        }
+
+        saveSettings();
+        toastr.success('已生成修改预览，确认满意后再应用到最新回复。');
+    } catch (error) {
+        console.error('[Response Guard] Rewrite failed:', error);
+        toastr.error(error?.message || '局部修改失败。');
+    } finally {
+        buttonEl?.removeAttribute('disabled');
+    }
+}
+
+async function applyRewriteResult() {
+    const profile = getActiveProfile();
+    const latest = getLatestAssistantMessage();
+    const resultEl = document.querySelector('#response_guard_rewrite_result');
+    const rewritten = String(resultEl?.value || profile.rewriteResult || '').trim();
+
+    if (!latest) {
+        toastr.warning('没有找到可覆盖的最新 AI 回复。');
+        return;
+    }
+
+    if (!rewritten) {
+        toastr.warning('还没有可应用的修改结果。请先生成修改预览。');
+        return;
+    }
+
+    const confirmed = confirm('确定用“修改结果预览”覆盖最新一条 AI 回复吗？这个操作会直接改写当前 swipe 的内容。');
+    if (!confirmed) {
+        return;
+    }
+
+    try {
+        await replaceMessageText(latest.index, latest.message, rewritten);
+        profile.rewriteResult = rewritten;
+        saveSettings();
+        toastr.success('已将修改结果应用到最新回复。');
+    } catch (error) {
+        console.error('[Response Guard] Apply rewrite failed:', error);
+        toastr.error(error?.message || '应用修改失败。');
+    }
+}
+
+async function copyRewriteResult() {
+    const profile = getActiveProfile();
+    const resultEl = document.querySelector('#response_guard_rewrite_result');
+    const rewritten = String(resultEl?.value || profile.rewriteResult || '').trim();
+
+    if (!rewritten) {
+        toastr.warning('还没有可复制的修改结果。');
+        return;
+    }
+
+    try {
+        await copyTextToClipboard(rewritten);
+        toastr.success('已复制修改结果。');
+    } catch (error) {
+        console.error('[Response Guard] Copy rewrite failed:', error);
+        toastr.error('复制失败，请手动选中结果复制。');
+    }
+}
+
+
+function ensureRewriteQuickDialog() {
+    let dialog = document.querySelector('#response_guard_quick_rewrite_dialog');
+
+    if (dialog) {
+        return dialog;
+    }
+
+    dialog = document.createElement('div');
+    dialog.id = 'response_guard_quick_rewrite_dialog';
+    dialog.className = 'response-guard-modal hidden';
+    dialog.innerHTML = `
+      <div class="response-guard-modal-backdrop" data-response-guard-close="1"></div>
+      <div class="response-guard-modal-card" role="dialog" aria-modal="true" aria-labelledby="response_guard_quick_rewrite_title">
+        <div class="response-guard-modal-header">
+          <div>
+            <div id="response_guard_quick_rewrite_title" class="response-guard-modal-title">局部修改最新回复</div>
+            <div class="response-guard-modal-subtitle">输入你不满意的地方，先生成完整预览，确认后再覆盖当前 swipe。</div>
+          </div>
+          <button id="response_guard_quick_rewrite_close" class="menu_button response-guard-btn" type="button" title="关闭">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+
+        <label for="response_guard_quick_rewrite_instruction">
+          <span>修改要求</span>
+        </label>
+        <textarea
+          id="response_guard_quick_rewrite_instruction"
+          class="text_pole textarea_compact"
+          rows="5"
+          placeholder="例如：把内心戏写得更克制一点；第三段动作描写太硬，改得自然一点；保留标签和结尾模块，只修改正文中间那段。"
+        ></textarea>
+
+        <div class="response-guard-actions compact">
+          <button id="response_guard_quick_generate_rewrite" class="menu_button response-guard-primary" type="button">
+            <i class="fa-solid fa-wand-magic-sparkles"></i>
+            生成修改预览
+          </button>
+          <button id="response_guard_quick_apply_rewrite" class="menu_button response-guard-btn" type="button">
+            应用到最新回复
+          </button>
+          <button id="response_guard_quick_copy_rewrite" class="menu_button response-guard-btn" type="button">
+            复制预览
+          </button>
+        </div>
+
+        <label for="response_guard_quick_rewrite_result">
+          <span>修改结果预览</span>
+        </label>
+        <textarea
+          id="response_guard_quick_rewrite_result"
+          class="text_pole textarea_compact"
+          rows="12"
+          placeholder="这里会显示修改后的完整最新回复。"
+        ></textarea>
+      </div>
+    `;
+
+    document.body.appendChild(dialog);
+
+    const close = () => closeRewriteQuickDialog();
+    dialog.querySelector('#response_guard_quick_rewrite_close')?.addEventListener('click', close);
+    dialog.querySelector('.response-guard-modal-backdrop')?.addEventListener('click', close);
+    dialog.querySelector('#response_guard_quick_generate_rewrite')?.addEventListener('click', () => generateRewriteQuickPreview());
+    dialog.querySelector('#response_guard_quick_apply_rewrite')?.addEventListener('click', () => applyRewriteQuickResult());
+    dialog.querySelector('#response_guard_quick_copy_rewrite')?.addEventListener('click', () => copyRewriteQuickResult());
+
+    dialog.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            closeRewriteQuickDialog();
+        }
+    });
+
+    return dialog;
+}
+
+function openRewriteQuickDialog() {
+    const profile = getActiveProfile();
+    const latest = getLatestAssistantMessage();
+
+    if (!latest) {
+        toastr.warning('没有找到可修改的最新 AI 回复。');
+        return;
+    }
+
+    const dialog = ensureRewriteQuickDialog();
+    const instructionEl = dialog.querySelector('#response_guard_quick_rewrite_instruction');
+    const resultEl = dialog.querySelector('#response_guard_quick_rewrite_result');
+
+    if (instructionEl) {
+        instructionEl.value = profile.rewriteInstruction || '';
+    }
+
+    if (resultEl) {
+        resultEl.value = profile.rewriteResult || '';
+        focusTextareaStart(resultEl);
+    }
+
+    dialog.classList.remove('hidden');
+    setTimeout(() => instructionEl?.focus(), 30);
+}
+
+function closeRewriteQuickDialog() {
+    const dialog = document.querySelector('#response_guard_quick_rewrite_dialog');
+    dialog?.classList.add('hidden');
+}
+
+async function rewriteLatestWithInstruction(instruction, { apply = false } = {}) {
+    const latest = getLatestAssistantMessage();
+
+    if (!latest) {
+        throw new Error('没有找到可修改的最新 AI 回复。');
+    }
+
+    const cleanInstruction = String(instruction || '').trim();
+    if (!cleanInstruction) {
+        throw new Error('请先填写你想修改哪里、怎么修改。');
+    }
+
+    const rewritten = await runRewrite({ reply: latest.message.mes, instruction: cleanInstruction });
+
+    const profile = getActiveProfile();
+    profile.rewriteInstruction = cleanInstruction;
+    profile.rewriteResult = rewritten;
+    saveSettings();
+
+    if (apply) {
+        await replaceMessageText(latest.index, latest.message, rewritten);
+    }
+
+    return rewritten;
+}
+
+async function generateRewriteQuickPreview() {
+    const dialog = ensureRewriteQuickDialog();
+    const instructionEl = dialog.querySelector('#response_guard_quick_rewrite_instruction');
+    const resultEl = dialog.querySelector('#response_guard_quick_rewrite_result');
+    const buttonEl = dialog.querySelector('#response_guard_quick_generate_rewrite');
+    const instruction = String(instructionEl?.value || '').trim();
+
+    if (!instruction) {
+        toastr.warning('请先填写你想修改哪里、怎么修改。');
+        return;
+    }
+
+    buttonEl?.setAttribute('disabled', 'disabled');
+
+    try {
+        toastr.info(`正在用「${getActiveProfile().name}」生成局部修改预览…`);
+        const rewritten = await rewriteLatestWithInstruction(instruction, { apply: false });
+
+        if (resultEl) {
+            resultEl.value = rewritten;
+            focusTextareaStart(resultEl);
+        }
+
+        const settingsResultEl = document.querySelector('#response_guard_rewrite_result');
+        const settingsInstructionEl = document.querySelector('#response_guard_rewrite_instruction');
+        if (settingsInstructionEl) settingsInstructionEl.value = instruction;
+        if (settingsResultEl) {
+            settingsResultEl.value = rewritten;
+            focusTextareaStart(settingsResultEl);
+        }
+
+        toastr.success('已生成修改预览，确认满意后再应用到最新回复。');
+    } catch (error) {
+        console.error('[Response Guard] Quick rewrite failed:', error);
+        toastr.error(error?.message || '局部修改失败。');
+    } finally {
+        buttonEl?.removeAttribute('disabled');
+    }
+}
+
+async function applyRewriteQuickResult() {
+    const dialog = ensureRewriteQuickDialog();
+    const resultEl = dialog.querySelector('#response_guard_quick_rewrite_result');
+    const rewritten = String(resultEl?.value || '').trim();
+    const latest = getLatestAssistantMessage();
+
+    if (!latest) {
+        toastr.warning('没有找到可覆盖的最新 AI 回复。');
+        return;
+    }
+
+    if (!rewritten) {
+        toastr.warning('还没有可应用的修改结果。请先生成修改预览。');
+        return;
+    }
+
+    const confirmed = confirm('确定用“修改结果预览”覆盖最新一条 AI 回复吗？这个操作会直接改写当前 swipe 的内容。');
+    if (!confirmed) {
+        return;
+    }
+
+    try {
+        await replaceMessageText(latest.index, latest.message, rewritten);
+        getActiveProfile().rewriteResult = rewritten;
+        saveSettings();
+        toastr.success('已将修改结果应用到最新回复。');
+        closeRewriteQuickDialog();
+    } catch (error) {
+        console.error('[Response Guard] Quick apply rewrite failed:', error);
+        toastr.error(error?.message || '应用修改失败。');
+    }
+}
+
+async function copyRewriteQuickResult() {
+    const dialog = ensureRewriteQuickDialog();
+    const resultEl = dialog.querySelector('#response_guard_quick_rewrite_result');
+    const rewritten = String(resultEl?.value || '').trim();
+
+    if (!rewritten) {
+        toastr.warning('还没有可复制的修改结果。');
+        return;
+    }
+
+    try {
+        await copyTextToClipboard(rewritten);
+        toastr.success('已复制修改结果。');
+    } catch (error) {
+        console.error('[Response Guard] Copy quick rewrite failed:', error);
+        toastr.error('复制失败，请手动选中结果复制。');
+    }
+}
+
+function ensureMagicMenuItems(retryCount = 0) {
+    const extensionsMenu = document.getElementById('extensionsMenu');
+
+    if (!extensionsMenu) {
+        if (retryCount < 20) {
+            setTimeout(() => ensureMagicMenuItems(retryCount + 1), 250);
+        }
+        return;
+    }
+
+    if (document.getElementById('response_guard_magic_fix')) {
+        return;
+    }
+
+    const fixItem = document.createElement('div');
+    fixItem.id = 'response_guard_magic_fix_container';
+    fixItem.className = 'extension_container interactable';
+    fixItem.tabIndex = 0;
+    fixItem.innerHTML = `
+      <div id="response_guard_magic_fix" class="list-group-item flex-container flexGap5 interactable" tabindex="0" title="检查最新回复并把缺失格式追加到末尾">
+        <div class="fa-fw fa-solid fa-shield-halved extensionsMenuExtensionButton"></div>
+        <span>Response Guard：补齐格式</span>
+      </div>
+    `;
+
+    const rewriteItem = document.createElement('div');
+    rewriteItem.id = 'response_guard_magic_rewrite_container';
+    rewriteItem.className = 'extension_container interactable';
+    rewriteItem.tabIndex = 0;
+    rewriteItem.innerHTML = `
+      <div id="response_guard_magic_rewrite" class="list-group-item flex-container flexGap5 interactable" tabindex="0" title="打开局部修改窗口，修改最新回复中间内容">
+        <div class="fa-fw fa-solid fa-pen-to-square extensionsMenuExtensionButton"></div>
+        <span>Response Guard：局部修改</span>
+      </div>
+    `;
+
+    extensionsMenu.appendChild(fixItem);
+    extensionsMenu.appendChild(rewriteItem);
+}
+
+function bindMagicMenuEvents() {
+    if (bindMagicMenuEvents.bound) {
+        return;
+    }
+
+    bindMagicMenuEvents.bound = true;
+
+    document.addEventListener('click', (event) => {
+        if (event.target.closest('#response_guard_magic_fix')) {
+            event.preventDefault();
+            event.stopPropagation();
+            checkLatestMessage({ repair: true });
+            return;
+        }
+
+        if (event.target.closest('#response_guard_magic_rewrite')) {
+            event.preventDefault();
+            event.stopPropagation();
+            openRewriteQuickDialog();
+        }
+    });
+}
+
+function exposeGlobalApi() {
+    window.ResponseGuard = {
+        checkOnly: () => checkLatestMessage({ repair: false }),
+        checkAndFix: () => checkLatestMessage({ repair: true }),
+        fixLatest: () => checkLatestMessage({ repair: true }),
+        openRewriteDialog: () => openRewriteQuickDialog(),
+        rewriteLatest: (instruction, options = {}) => rewriteLatestWithInstruction(instruction, options),
+        getActiveProfile: () => clone(getActiveProfile()),
+    };
 }
 
 function syncCustomApiVisibility() {
@@ -656,6 +1187,8 @@ function syncFieldsFromActiveProfile() {
     const inductionExampleEl = document.querySelector('#response_guard_induction_example');
     const inductionRequirementEl = document.querySelector('#response_guard_induction_requirement');
     const inductionResultEl = document.querySelector('#response_guard_induction_result');
+    const rewriteInstructionEl = document.querySelector('#response_guard_rewrite_instruction');
+    const rewriteResultEl = document.querySelector('#response_guard_rewrite_result');
 
     if (profileNameEl) profileNameEl.value = profile.name;
     if (rulesEl) rulesEl.value = profile.rules;
@@ -666,7 +1199,15 @@ function syncFieldsFromActiveProfile() {
     if (apiKeyEl) apiKeyEl.value = profile.customApiKey;
     if (inductionExampleEl) inductionExampleEl.value = profile.inductionExample;
     if (inductionRequirementEl) inductionRequirementEl.value = profile.inductionRequirement;
-    if (inductionResultEl) inductionResultEl.value = profile.inductionResult;
+    if (inductionResultEl) {
+        inductionResultEl.value = profile.inductionResult;
+        focusTextareaStart(inductionResultEl);
+    }
+    if (rewriteInstructionEl) rewriteInstructionEl.value = profile.rewriteInstruction;
+    if (rewriteResultEl) {
+        rewriteResultEl.value = profile.rewriteResult;
+        focusTextareaStart(rewriteResultEl);
+    }
 
     populateProfilePicker();
     populateModelPicker([]);
@@ -699,6 +1240,11 @@ function bindSettingsEvents() {
     const induceRulesEl = document.querySelector('#response_guard_induce_rules');
     const appendInductionEl = document.querySelector('#response_guard_append_induction_to_rules');
     const copyInductionEl = document.querySelector('#response_guard_copy_induction_result');
+    const rewriteInstructionEl = document.querySelector('#response_guard_rewrite_instruction');
+    const rewriteResultEl = document.querySelector('#response_guard_rewrite_result');
+    const generateRewriteEl = document.querySelector('#response_guard_generate_rewrite');
+    const applyRewriteEl = document.querySelector('#response_guard_apply_rewrite');
+    const copyRewriteEl = document.querySelector('#response_guard_copy_rewrite_result');
 
     if (
         !profilePickerEl
@@ -722,6 +1268,11 @@ function bindSettingsEvents() {
         || !induceRulesEl
         || !appendInductionEl
         || !copyInductionEl
+        || !rewriteInstructionEl
+        || !rewriteResultEl
+        || !generateRewriteEl
+        || !applyRewriteEl
+        || !copyRewriteEl
     ) {
         console.error('[Response Guard] Settings UI failed to initialize.');
         return;
@@ -868,6 +1419,20 @@ function bindSettingsEvents() {
     appendInductionEl.addEventListener('click', () => appendInductionResultToRules());
     copyInductionEl.addEventListener('click', () => copyInductionResult());
 
+    rewriteInstructionEl.addEventListener('input', () => {
+        getActiveProfile().rewriteInstruction = rewriteInstructionEl.value;
+        saveSettings();
+    });
+
+    rewriteResultEl.addEventListener('input', () => {
+        getActiveProfile().rewriteResult = rewriteResultEl.value;
+        saveSettings();
+    });
+
+    generateRewriteEl.addEventListener('click', () => generateRewritePreview());
+    applyRewriteEl.addEventListener('click', () => applyRewriteResult());
+    copyRewriteEl.addEventListener('click', () => copyRewriteResult());
+
     modelPickerEl.addEventListener('change', () => {
         if (!modelPickerEl.value) {
             return;
@@ -926,6 +1491,9 @@ async function init() {
 
     document.querySelector('#extensions_settings2')?.insertAdjacentHTML('beforeend', html);
     bindSettingsEvents();
+    ensureMagicMenuItems();
+    bindMagicMenuEvents();
+    exposeGlobalApi();
 
     console.log('[Response Guard] Extension loaded');
 }
