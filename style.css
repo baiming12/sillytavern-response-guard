@@ -457,3 +457,119 @@ body.response-guard-modal-open {
     min-height: 220px;
   }
 }
+
+/* Response Guard rewrite presets */
+.response-guard-preset-manager,
+.response-guard-preset-panel {
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor, #888) 45%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #000) 10%, transparent);
+}
+
+.response-guard-preset-title {
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.response-guard-preset-check-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.response-guard-preset-check-title {
+  opacity: 0.8;
+  font-size: 0.9em;
+  font-weight: 700;
+}
+
+.response-guard-preset-check-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  align-items: start;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor, #888) 32%, transparent);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.response-guard-preset-check-item input {
+  margin-top: 3px;
+}
+
+.response-guard-preset-check-body,
+.response-guard-preset-info {
+  min-width: 0;
+}
+
+.response-guard-preset-check-name,
+.response-guard-preset-name {
+  display: block;
+  font-weight: 700;
+  margin-bottom: 3px;
+}
+
+.response-guard-preset-check-text,
+.response-guard-preset-text,
+.response-guard-preset-empty {
+  display: block;
+  opacity: 0.82;
+  font-size: 0.9em;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.response-guard-preset-manager-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.response-guard-preset-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor, #888) 32%, transparent);
+  border-radius: 8px;
+}
+
+.response-guard-preset-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  justify-content: flex-end;
+}
+
+.response-guard-preset-edit-grid {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.7fr) minmax(0, 1fr);
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.response-guard-quick-preset-panel {
+  margin-top: 0;
+}
+
+@media (max-width: 700px) {
+  .response-guard-preset-row,
+  .response-guard-preset-edit-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .response-guard-preset-actions {
+    justify-content: stretch;
+  }
+
+  .response-guard-preset-actions .menu_button {
+    flex: 1 1 auto;
+  }
+}

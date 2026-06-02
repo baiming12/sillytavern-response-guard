@@ -30,6 +30,8 @@ const DEFAULT_SETTINGS = Object.freeze({
     profiles: [{ id: 'default', ...DEFAULT_PROFILE }],
     activeProfileId: 'default',
     characterBindings: {},
+    globalRewritePresets: [],
+    characterRewritePresets: {},
 });
 
 function getContext() {
@@ -42,6 +44,37 @@ function clone(value) {
 
 function makeProfileId() {
     return `profile_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+
+function makeRewritePresetId() {
+    return `rewrite_preset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeRewritePreset(preset = {}) {
+    const text = typeof preset.text === 'string'
+        ? preset.text
+        : typeof preset.instruction === 'string'
+            ? preset.instruction
+            : typeof preset.content === 'string'
+                ? preset.content
+                : '';
+
+    return {
+        id: typeof preset.id === 'string' && preset.id.trim() ? preset.id : makeRewritePresetId(),
+        name: typeof preset.name === 'string' && preset.name.trim() ? preset.name : (text.trim().slice(0, 18) || '未命名预设'),
+        text: text.trim(),
+    };
+}
+
+function normalizeRewritePresetList(list) {
+    if (!Array.isArray(list)) {
+        return [];
+    }
+
+    return list
+        .map(normalizeRewritePreset)
+        .filter((preset) => preset.text.trim());
 }
 
 function normalizeProfile(profile = {}) {
@@ -97,6 +130,38 @@ function getSettings() {
 
     if (!settings.characterBindings || typeof settings.characterBindings !== 'object' || Array.isArray(settings.characterBindings)) {
         settings.characterBindings = {};
+    }
+
+    // 局部修改要求预设：全局预设所有角色卡可见；本角色卡预设按角色卡 key 保存。
+    if (!Array.isArray(settings.globalRewritePresets)) {
+        settings.globalRewritePresets = normalizeRewritePresetList(
+            settings.globalRewritePresets
+            || settings.rewritePresets?.global
+            || settings.rewritePresetGlobal
+            || [],
+        );
+    } else {
+        settings.globalRewritePresets = normalizeRewritePresetList(settings.globalRewritePresets);
+    }
+
+    if (!settings.characterRewritePresets || typeof settings.characterRewritePresets !== 'object' || Array.isArray(settings.characterRewritePresets)) {
+        settings.characterRewritePresets = settings.rewritePresets?.local
+            || settings.rewritePresets?.character
+            || settings.localRewritePresets
+            || {};
+    }
+
+    if (!settings.characterRewritePresets || typeof settings.characterRewritePresets !== 'object' || Array.isArray(settings.characterRewritePresets)) {
+        settings.characterRewritePresets = {};
+    }
+
+    for (const [characterKey, presets] of Object.entries(settings.characterRewritePresets)) {
+        const normalized = normalizeRewritePresetList(presets);
+        if (normalized.length) {
+            settings.characterRewritePresets[characterKey] = normalized;
+        } else {
+            delete settings.characterRewritePresets[characterKey];
+        }
     }
 
     return settings;
@@ -715,6 +780,437 @@ async function copyInductionResult() {
 }
 
 
+function getCharacterRewritePresets(characterKey = getCurrentCharacterKey(), create = false) {
+    const settings = getSettings();
+    const key = String(characterKey || '').trim();
+
+    if (!key) {
+        return [];
+    }
+
+    if (!Array.isArray(settings.characterRewritePresets[key])) {
+        if (!create) {
+            return [];
+        }
+        settings.characterRewritePresets[key] = [];
+    }
+
+    return settings.characterRewritePresets[key];
+}
+
+function getRewritePresetListByScope(scope, create = false) {
+    const settings = getSettings();
+
+    if (scope === 'local') {
+        return getCharacterRewritePresets(getCurrentCharacterKey(), create);
+    }
+
+    if (!Array.isArray(settings.globalRewritePresets)) {
+        settings.globalRewritePresets = [];
+    }
+
+    return settings.globalRewritePresets;
+}
+
+function getAvailableRewritePresets() {
+    const settings = getSettings();
+    const globalPresets = settings.globalRewritePresets.map((preset) => ({
+        ...preset,
+        scope: 'global',
+        scopeLabel: '全局',
+    }));
+    const localPresets = getCharacterRewritePresets().map((preset) => ({
+        ...preset,
+        scope: 'local',
+        scopeLabel: '本角色卡',
+    }));
+
+    return [...globalPresets, ...localPresets];
+}
+
+function getRewritePresetByScopeAndId(scope, presetId) {
+    const list = getRewritePresetListByScope(scope, false);
+    return list.find((preset) => preset.id === presetId) || null;
+}
+
+function removeRewritePreset(scope, presetId) {
+    const settings = getSettings();
+
+    if (scope === 'local') {
+        const key = getCurrentCharacterKey();
+        const list = getCharacterRewritePresets(key, false);
+        settings.characterRewritePresets[key] = list.filter((preset) => preset.id !== presetId);
+        if (!settings.characterRewritePresets[key].length) {
+            delete settings.characterRewritePresets[key];
+        }
+        return;
+    }
+
+    settings.globalRewritePresets = settings.globalRewritePresets.filter((preset) => preset.id !== presetId);
+}
+
+function renderRewritePresetChecklist(container, { inputPrefix = 'response_guard_rewrite_preset' } = {}) {
+    if (!container) {
+        return;
+    }
+
+    const presets = getAvailableRewritePresets();
+    container.innerHTML = '';
+
+    if (!presets.length) {
+        const empty = document.createElement('div');
+        empty.className = 'response-guard-preset-empty';
+        empty.textContent = '还没有预设。可以先在设置面板里新建全局预设或本角色卡预设。';
+        container.appendChild(empty);
+        return;
+    }
+
+    for (const group of [
+        { scope: 'global', title: '全局预设' },
+        { scope: 'local', title: `本角色卡预设：${getCurrentCharacterName()}` },
+    ]) {
+        const groupPresets = presets.filter((preset) => preset.scope === group.scope);
+        if (!groupPresets.length) {
+            continue;
+        }
+
+        const section = document.createElement('div');
+        section.className = 'response-guard-preset-check-section';
+
+        const title = document.createElement('div');
+        title.className = 'response-guard-preset-check-title';
+        title.textContent = group.title;
+        section.appendChild(title);
+
+        for (const preset of groupPresets) {
+            const label = document.createElement('label');
+            label.className = 'response-guard-preset-check-item';
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.dataset.responseGuardPresetScope = preset.scope;
+            checkbox.dataset.responseGuardPresetId = preset.id;
+            checkbox.name = `${inputPrefix}_${preset.scope}`;
+
+            const body = document.createElement('span');
+            body.className = 'response-guard-preset-check-body';
+
+            const name = document.createElement('span');
+            name.className = 'response-guard-preset-check-name';
+            name.textContent = preset.name;
+
+            const text = document.createElement('span');
+            text.className = 'response-guard-preset-check-text';
+            text.textContent = preset.text;
+
+            body.append(name, text);
+            label.append(checkbox, body);
+            section.appendChild(label);
+        }
+
+        container.appendChild(section);
+    }
+}
+
+function getSelectedRewritePresetTexts(root) {
+    if (!root) {
+        return [];
+    }
+
+    return Array.from(root.querySelectorAll('input[data-response-guard-preset-id]:checked'))
+        .map((checkbox) => {
+            const scope = checkbox.dataset.responseGuardPresetScope === 'local' ? 'local' : 'global';
+            const preset = getRewritePresetByScopeAndId(scope, checkbox.dataset.responseGuardPresetId);
+            return preset ? { ...preset, scope } : null;
+        })
+        .filter(Boolean);
+}
+
+function buildCombinedRewriteInstruction(manualInstruction, presetRoot) {
+    const parts = [];
+    const presets = getSelectedRewritePresetTexts(presetRoot);
+
+    if (presets.length) {
+        parts.push(`请同时遵守以下修改要求预设：
+${presets.map((preset, index) => `${index + 1}. 【${preset.name}】
+${preset.text}`).join('\n\n')}`);
+    }
+
+    const manual = String(manualInstruction || '').trim();
+    if (manual) {
+        parts.push(`本次额外修改要求：
+${manual}`);
+    }
+
+    return parts.join('\n\n').trim();
+}
+
+function renderRewritePresetManager() {
+    const listEl = document.querySelector('#response_guard_rewrite_presets_manager_list');
+    const scopeEl = document.querySelector('#response_guard_rewrite_preset_scope');
+    const localOptionEl = scopeEl?.querySelector('option[value="local"]');
+
+    if (localOptionEl) {
+        localOptionEl.textContent = `本角色卡预设：${getCurrentCharacterName()}`;
+        localOptionEl.disabled = !getCurrentCharacterKey();
+    }
+
+    if (!listEl) {
+        return;
+    }
+
+    const presets = getAvailableRewritePresets();
+    listEl.innerHTML = '';
+
+    if (!presets.length) {
+        const empty = document.createElement('div');
+        empty.className = 'response-guard-preset-empty';
+        empty.textContent = '还没有修改要求预设。';
+        listEl.appendChild(empty);
+        return;
+    }
+
+    for (const preset of presets) {
+        const row = document.createElement('div');
+        row.className = 'response-guard-preset-row';
+
+        const info = document.createElement('div');
+        info.className = 'response-guard-preset-info';
+
+        const title = document.createElement('div');
+        title.className = 'response-guard-preset-name';
+        title.textContent = `${preset.name} · ${preset.scopeLabel}`;
+
+        const text = document.createElement('div');
+        text.className = 'response-guard-preset-text';
+        text.textContent = preset.text;
+
+        info.append(title, text);
+
+        const actions = document.createElement('div');
+        actions.className = 'response-guard-preset-actions';
+
+        const insertButton = document.createElement('button');
+        insertButton.className = 'menu_button response-guard-btn';
+        insertButton.type = 'button';
+        insertButton.textContent = '填入';
+        insertButton.dataset.action = 'insert-preset';
+        insertButton.dataset.scope = preset.scope;
+        insertButton.dataset.id = preset.id;
+
+        const editButton = document.createElement('button');
+        editButton.className = 'menu_button response-guard-btn';
+        editButton.type = 'button';
+        editButton.textContent = '编辑';
+        editButton.dataset.action = 'edit-preset';
+        editButton.dataset.scope = preset.scope;
+        editButton.dataset.id = preset.id;
+
+        const deleteButton = document.createElement('button');
+        deleteButton.className = 'menu_button response-guard-btn danger';
+        deleteButton.type = 'button';
+        deleteButton.textContent = '删除';
+        deleteButton.dataset.action = 'delete-preset';
+        deleteButton.dataset.scope = preset.scope;
+        deleteButton.dataset.id = preset.id;
+
+        actions.append(insertButton, editButton, deleteButton);
+        row.append(info, actions);
+        listEl.appendChild(row);
+    }
+}
+
+function renderRewritePresetAreas() {
+    try {
+        ensureRewritePresetSettingsPanel();
+        renderRewritePresetChecklist(document.querySelector('#response_guard_rewrite_presets_checklist'), {
+            inputPrefix: 'response_guard_settings_rewrite_preset',
+        });
+        renderRewritePresetChecklist(document.querySelector('#response_guard_quick_rewrite_presets_checklist'), {
+            inputPrefix: 'response_guard_quick_rewrite_preset',
+        });
+        renderRewritePresetManager();
+    } catch (error) {
+        console.warn('[Response Guard] Failed to render rewrite presets:', error);
+    }
+}
+
+function resetRewritePresetForm() {
+    const formEl = document.querySelector('#response_guard_rewrite_preset_form');
+    const scopeEl = document.querySelector('#response_guard_rewrite_preset_scope');
+    const nameEl = document.querySelector('#response_guard_rewrite_preset_name');
+    const textEl = document.querySelector('#response_guard_rewrite_preset_text');
+    const saveButtonEl = document.querySelector('#response_guard_save_rewrite_preset');
+
+    if (scopeEl) scopeEl.value = 'global';
+    if (nameEl) nameEl.value = '';
+    if (textEl) textEl.value = '';
+    if (saveButtonEl) saveButtonEl.textContent = '保存为新预设';
+    if (formEl) {
+        delete formEl.dataset.editingId;
+        delete formEl.dataset.editingScope;
+    }
+}
+
+function saveRewritePresetFromForm() {
+    const formEl = document.querySelector('#response_guard_rewrite_preset_form');
+    const scopeEl = document.querySelector('#response_guard_rewrite_preset_scope');
+    const nameEl = document.querySelector('#response_guard_rewrite_preset_name');
+    const textEl = document.querySelector('#response_guard_rewrite_preset_text');
+    const scope = scopeEl?.value === 'local' ? 'local' : 'global';
+    const name = String(nameEl?.value || '').trim();
+    const text = String(textEl?.value || '').trim();
+
+    if (scope === 'local' && !getCurrentCharacterKey()) {
+        toastr.warning('未识别到当前角色卡，暂时不能保存本角色卡预设。');
+        return;
+    }
+
+    if (!text) {
+        toastr.warning('请先填写预设内容。');
+        return;
+    }
+
+    const editingId = formEl?.dataset.editingId;
+    const editingScope = formEl?.dataset.editingScope;
+    const preset = normalizeRewritePreset({
+        id: editingId || makeRewritePresetId(),
+        name: name || text.slice(0, 18) || '未命名预设',
+        text,
+    });
+
+    if (editingId) {
+        removeRewritePreset(editingScope || scope, editingId);
+    }
+
+    getRewritePresetListByScope(scope, true).push(preset);
+    resetRewritePresetForm();
+    renderRewritePresetAreas();
+    saveSettings();
+    toastr.success(editingId ? '已更新修改要求预设。' : '已保存修改要求预设。');
+}
+
+function editRewritePreset(scope, presetId) {
+    const preset = getRewritePresetByScopeAndId(scope, presetId);
+    const formEl = document.querySelector('#response_guard_rewrite_preset_form');
+    const scopeEl = document.querySelector('#response_guard_rewrite_preset_scope');
+    const nameEl = document.querySelector('#response_guard_rewrite_preset_name');
+    const textEl = document.querySelector('#response_guard_rewrite_preset_text');
+    const saveButtonEl = document.querySelector('#response_guard_save_rewrite_preset');
+
+    if (!preset) {
+        toastr.warning('没有找到这个预设，可能已经被删除。');
+        return;
+    }
+
+    if (scopeEl) scopeEl.value = scope === 'local' ? 'local' : 'global';
+    if (nameEl) nameEl.value = preset.name;
+    if (textEl) {
+        textEl.value = preset.text;
+        textEl.focus();
+    }
+    if (saveButtonEl) saveButtonEl.textContent = '保存修改';
+    if (formEl) {
+        formEl.dataset.editingId = preset.id;
+        formEl.dataset.editingScope = scope;
+    }
+}
+
+function deleteRewritePreset(scope, presetId) {
+    const preset = getRewritePresetByScopeAndId(scope, presetId);
+
+    if (!preset) {
+        toastr.warning('没有找到这个预设，可能已经被删除。');
+        return;
+    }
+
+    if (!confirm(`确定删除预设「${preset.name}」吗？`)) {
+        return;
+    }
+
+    removeRewritePreset(scope, presetId);
+    resetRewritePresetForm();
+    renderRewritePresetAreas();
+    saveSettings();
+    toastr.success('已删除修改要求预设。');
+}
+
+function insertRewritePresetToInstruction(scope, presetId) {
+    const preset = getRewritePresetByScopeAndId(scope, presetId);
+    const instructionEl = document.querySelector('#response_guard_rewrite_instruction');
+
+    if (!preset || !instructionEl) {
+        return;
+    }
+
+    const oldText = instructionEl.value.trim();
+    instructionEl.value = oldText ? `${oldText}\n\n${preset.text}` : preset.text;
+    getActiveProfile().rewriteInstruction = instructionEl.value;
+    saveSettings();
+    toastr.success('已填入本次额外修改要求。');
+}
+
+function ensureRewritePresetSettingsPanel() {
+    if (document.querySelector('#response_guard_rewrite_preset_form')) {
+        return;
+    }
+
+    const rewriteLabel = document.querySelector('label[for="response_guard_rewrite_instruction"]');
+    if (!rewriteLabel) {
+        return;
+    }
+
+    const panel = document.createElement('div');
+    panel.id = 'response_guard_rewrite_preset_form';
+    panel.className = 'response-guard-preset-manager';
+    panel.innerHTML = `
+      <div class="response-guard-preset-panel">
+        <div class="response-guard-preset-title">可勾选修改预设</div>
+        <div id="response_guard_rewrite_presets_checklist" class="response-guard-preset-checklist"></div>
+      </div>
+
+      <div class="response-guard-preset-title">管理修改要求预设</div>
+      <p class="response-guard-help compact">
+        全局预设会在所有角色卡显示；本角色卡预设只会在当前角色卡显示。适合保存“内心戏克制”“动作描写自然”“保留标签结构”等常用要求。
+      </p>
+      <div id="response_guard_rewrite_presets_manager_list" class="response-guard-preset-manager-list"></div>
+
+      <div class="response-guard-preset-edit-grid">
+        <select id="response_guard_rewrite_preset_scope" class="text_pole">
+          <option value="global">全局预设</option>
+          <option value="local">本角色卡预设</option>
+        </select>
+        <input id="response_guard_rewrite_preset_name" class="text_pole" type="text" placeholder="预设名称，例如：内心戏克制" />
+      </div>
+      <textarea id="response_guard_rewrite_preset_text" class="text_pole textarea_compact" rows="4" placeholder="填写这个预设的具体要求。例如：只调整内心戏，让情绪表达更克制、更含蓄，不要大段解释心理；保留原有对话、动作、标签和结尾模块。"></textarea>
+      <div class="response-guard-actions compact">
+        <button id="response_guard_save_rewrite_preset" class="menu_button response-guard-primary" type="button">保存为新预设</button>
+        <button id="response_guard_reset_rewrite_preset_form" class="menu_button response-guard-btn" type="button">清空编辑框</button>
+      </div>
+    `;
+
+    rewriteLabel.parentElement?.insertBefore(panel, rewriteLabel);
+
+    panel.querySelector('#response_guard_save_rewrite_preset')?.addEventListener('click', () => saveRewritePresetFromForm());
+    panel.querySelector('#response_guard_reset_rewrite_preset_form')?.addEventListener('click', () => resetRewritePresetForm());
+    panel.querySelector('#response_guard_rewrite_presets_manager_list')?.addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-action]');
+        if (!button) {
+            return;
+        }
+
+        const { action, scope, id } = button.dataset;
+        if (action === 'edit-preset') {
+            editRewritePreset(scope, id);
+        } else if (action === 'delete-preset') {
+            deleteRewritePreset(scope, id);
+        } else if (action === 'insert-preset') {
+            insertRewritePresetToInstruction(scope, id);
+        }
+    });
+}
+
+
 async function generateRewritePreview() {
     const profile = getActiveProfile();
     const latest = getLatestAssistantMessage();
@@ -727,9 +1223,10 @@ async function generateRewritePreview() {
         return;
     }
 
-    const instruction = String(instructionEl?.value || '').trim();
+    const manualInstruction = String(instructionEl?.value || '').trim();
+    const instruction = buildCombinedRewriteInstruction(manualInstruction, document.querySelector('#response_guard_rewrite_preset_form'));
     if (!instruction) {
-        toastr.warning('请先填写你想修改哪里、怎么修改。');
+        toastr.warning('请先勾选一个修改要求预设，或填写你想修改哪里、怎么修改。');
         return;
     }
 
@@ -831,8 +1328,13 @@ function ensureRewriteQuickDialog() {
           </button>
         </div>
 
+        <div class="response-guard-preset-panel response-guard-quick-preset-panel">
+          <div class="response-guard-preset-title">修改要求预设</div>
+          <div id="response_guard_quick_rewrite_presets_checklist" class="response-guard-preset-checklist"></div>
+        </div>
+
         <label for="response_guard_quick_rewrite_instruction">
-          <span>修改要求</span>
+          <span>本次额外修改要求</span>
         </label>
         <textarea
           id="response_guard_quick_rewrite_instruction"
@@ -911,6 +1413,10 @@ function openRewriteQuickDialog() {
         focusTextareaStart(resultEl);
     }
 
+    renderRewritePresetChecklist(dialog.querySelector('#response_guard_quick_rewrite_presets_checklist'), {
+        inputPrefix: 'response_guard_quick_rewrite_preset',
+    });
+
     dialog.classList.remove('hidden');
     document.body.classList.add('response-guard-modal-open');
 
@@ -964,10 +1470,11 @@ async function generateRewriteQuickPreview() {
     const instructionEl = dialog.querySelector('#response_guard_quick_rewrite_instruction');
     const resultEl = dialog.querySelector('#response_guard_quick_rewrite_result');
     const buttonEl = dialog.querySelector('#response_guard_quick_generate_rewrite');
-    const instruction = String(instructionEl?.value || '').trim();
+    const manualInstruction = String(instructionEl?.value || '').trim();
+    const instruction = buildCombinedRewriteInstruction(manualInstruction, dialog);
 
     if (!instruction) {
-        toastr.warning('请先填写你想修改哪里、怎么修改。');
+        toastr.warning('请先勾选一个修改要求预设，或填写你想修改哪里、怎么修改。');
         return;
     }
 
@@ -1121,6 +1628,7 @@ function exposeGlobalApi() {
         fixLatest: () => checkLatestMessage({ repair: true }),
         openRewriteDialog: () => openRewriteQuickDialog(),
         rewriteLatest: (instruction, options = {}) => rewriteLatestWithInstruction(instruction, options),
+        getRewritePresets: () => clone(getAvailableRewritePresets()),
         getActiveProfile: () => clone(getActiveProfile()),
     };
 }
@@ -1231,6 +1739,7 @@ function syncFieldsFromActiveProfile() {
     populateModelPicker([]);
     syncCustomApiVisibility();
     syncCharacterBindingText();
+    renderRewritePresetAreas();
 }
 
 function bindSettingsEvents() {
