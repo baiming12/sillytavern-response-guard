@@ -140,14 +140,46 @@
             用于修改最新 AI 回复中间的某些地方。先写修改要求，生成完整回复预览，确认满意后再覆盖最新回复；不会新建消息。
           </p>
 
-          <label for="response_guard_rewrite_instruction" class="response-guard-label-topless">
-            <span>修改要求</span>
+          <div class="response-guard-preset-manager">
+            <div class="response-guard-mini-title">修改要求预设</div>
+            <p class="response-guard-help compact">
+              全局预设所有角色卡都能勾选；局部预设只在当前角色卡里显示。生成修改预览时，可以只勾选预设，也可以再补充本次额外要求。
+            </p>
+            <div id="response_guard_rewrite_presets" class="response-guard-preset-checks"></div>
+
+            <div class="response-guard-preset-editor">
+              <input
+                id="response_guard_rewrite_preset_name"
+                class="text_pole"
+                type="text"
+                placeholder="预设名，例如：内心戏克制版"
+              />
+              <select id="response_guard_rewrite_preset_scope" class="text_pole">
+                <option value="global">全局：所有角色卡可见</option>
+                <option value="local">局部：仅当前角色卡可见</option>
+              </select>
+              <textarea
+                id="response_guard_rewrite_preset_text"
+                class="text_pole textarea_compact"
+                rows="3"
+                placeholder="写这个预设的具体修改要求，例如：只调整内心戏，让语气更克制、更含蓄，不要大段解释情绪；保留原有动作、对话、标签和结尾模块。"
+              ></textarea>
+              <button id="response_guard_add_rewrite_preset" class="menu_button response-guard-btn" type="button">
+                保存为修改预设
+              </button>
+            </div>
+
+            <div id="response_guard_rewrite_preset_list" class="response-guard-preset-list"></div>
+          </div>
+
+          <label for="response_guard_rewrite_instruction">
+            <span>本次额外修改要求</span>
           </label>
           <textarea
             id="response_guard_rewrite_instruction"
             class="text_pole textarea_compact"
             rows="5"
-            placeholder="例如：把内心戏写得更克制一点，不要太直白；第三段动作描写太硬，改得自然一些；保留所有标签和结尾模块。"
+            placeholder="例如：把第三段动作描写改得自然一些；保留所有标签和结尾模块。也可以不填，只勾选上面的预设。"
           ></textarea>
 
           <div class="response-guard-actions compact">
