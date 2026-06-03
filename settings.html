@@ -6,7 +6,7 @@
     </div>
     <div class="inline-drawer-content">
       <p class="response-guard-help">
-        检查最新一条 AI 回复是否漏掉你要求附带的结构；也可以按你的要求局部改写最新回复中间的某些段落。
+        检查最新一条 AI 回复是否漏掉你要求附带的结构；如果缺失，只把缺失部分追加到这条回复末尾，不新建消息，也不重写正文。
       </p>
 
       <details class="response-guard-card response-guard-fold">
@@ -129,52 +129,6 @@
         </div>
       </details>
 
-
-      <details class="response-guard-card response-guard-fold response-guard-rewrite-card">
-        <summary class="response-guard-fold-summary">
-          <span>局部修改最新回复</span>
-          <small>改内心戏 / 语气 / 段落写法</small>
-        </summary>
-        <div class="response-guard-fold-content">
-          <p class="response-guard-help compact">
-            用于修改最新 AI 回复中间的某些地方。先写修改要求，生成完整回复预览，确认满意后再覆盖最新回复；不会新建消息。
-          </p>
-
-          <label for="response_guard_rewrite_instruction" class="response-guard-label-topless">
-            <span>修改要求</span>
-          </label>
-          <textarea
-            id="response_guard_rewrite_instruction"
-            class="text_pole textarea_compact"
-            rows="5"
-            placeholder="例如：把内心戏写得更克制一点，不要太直白；第三段动作描写太硬，改得自然一些；保留所有标签和结尾模块。"
-          ></textarea>
-
-          <div class="response-guard-actions compact">
-            <button id="response_guard_generate_rewrite" class="menu_button response-guard-primary" type="button">
-              <i class="fa-solid fa-pen-to-square"></i>
-              生成修改预览
-            </button>
-            <button id="response_guard_apply_rewrite" class="menu_button response-guard-btn" type="button">
-              应用到最新回复
-            </button>
-            <button id="response_guard_copy_rewrite_result" class="menu_button response-guard-btn" type="button">
-              复制结果
-            </button>
-          </div>
-
-          <label for="response_guard_rewrite_result">
-            <span>修改结果预览</span>
-          </label>
-          <textarea
-            id="response_guard_rewrite_result"
-            class="text_pole textarea_compact"
-            rows="10"
-            placeholder="生成后的完整回复会显示在这里。确认没问题后，点击“应用到最新回复”覆盖当前最新回复。"
-          ></textarea>
-        </div>
-      </details>
-
       <details class="response-guard-card response-guard-fold">
         <summary class="response-guard-fold-summary">
           <span>API 调用设置</span>
@@ -263,7 +217,7 @@
 
       <div class="response-guard-note">
         <small>
-          当前 API 模式只发送必要内容做后台处理；补齐会追加到最新回复末尾，局部修改会在你确认后覆盖最新回复当前 swipe。上面的功能区默认折叠，需要修改时点标题展开即可。
+          当前 API 模式只发送“最新回复 + 你的规则”做一次后台检查；补齐时会直接同层追加到最新回复末尾。上面的功能区默认折叠，需要修改时点标题展开即可。
         </small>
       </div>
     </div>
