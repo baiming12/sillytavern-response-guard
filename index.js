@@ -171,6 +171,357 @@ function saveSettings() {
     getContext().saveSettingsDebounced();
 }
 
+const SEND_BUTTON_SELECTORS = [
+    '#send_but',
+    '#send_but_sheld',
+    '#send_button_sheld',
+    '#send_button',
+    '#sendButton',
+    '#sendMessage',
+    '#send_form [title*="Send"]',
+    '#send_form [title*="发送"]',
+    '#send_form [aria-label*="Send"]',
+    '#send_form [aria-label*="发送"]',
+    '#send_form [class*="paper-plane"]',
+    '#send_form [class*="location-arrow"]',
+    '#rightSendForm .fa-paper-plane',
+    '#send_form .fa-paper-plane',
+    '#send_textarea ~ .fa-paper-plane',
+    '#send_textarea ~ [class*="paper-plane"]',
+    '[data-testid="send-button"]',
+    '.fa-paper-plane',
+];
+
+const responseGuardGeneration = {
+    id: 0,
+    active: false,
+    cancelled: false,
+    label: '',
+    controller: null,
+    controls: [],
+    restoreSendButton: null,
+    sendButton: null,
+};
+
+class ResponseGuardCancelledError extends Error {
+    constructor() {
+        super('Response Guard generation cancelled.');
+        this.name = 'ResponseGuardCancelledError';
+    }
+}
+
+function isCancellationError(error) {
+    return error?.name === 'AbortError'
+        || error?.name === 'ResponseGuardCancelledError'
+        || error?.message === 'Response Guard generation cancelled.';
+}
+
+function throwIfResponseGuardCancelled(signal) {
+    if (signal?.aborted || responseGuardGeneration.cancelled) {
+        throw new ResponseGuardCancelledError();
+    }
+}
+
+function awaitCancellable(promise, signal) {
+    if (!signal) {
+        return promise;
+    }
+
+    throwIfResponseGuardCancelled(signal);
+
+    return new Promise((resolve, reject) => {
+        const onAbort = () => reject(new ResponseGuardCancelledError());
+        signal.addEventListener('abort', onAbort, { once: true });
+        Promise.resolve(promise)
+            .then(resolve, reject)
+            .finally(() => signal.removeEventListener('abort', onAbort));
+    });
+}
+
+function resolveClickableElement(element) {
+    if (!element) {
+        return null;
+    }
+
+    return element.closest?.('button, .interactable, .menu_button, [role="button"], [onclick], a')
+        || element;
+}
+
+function getSendButtonSearchRoot() {
+    const textarea = document.querySelector('#send_textarea, textarea[name="send_textarea"], #send_form textarea, textarea[placeholder*="Send"], textarea[placeholder*="发送"]');
+    const form = textarea?.closest?.('#send_form, form, [id*="send_form"], [class*="send_form"]')
+        || document.querySelector('#send_form, [id*="send_form"]');
+
+    return { textarea, form };
+}
+
+function getCandidateText(element) {
+    return [
+        element.id,
+        element.className,
+        element.getAttribute?.('title'),
+        element.getAttribute?.('aria-label'),
+        element.getAttribute?.('data-testid'),
+        element.textContent,
+    ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+}
+
+function looksLikeSendButton(element) {
+    const text = getCandidateText(element);
+    return /send|发送|paper-plane|location-arrow|fa-paper-plane|fa-location-arrow/.test(text);
+}
+
+function findSendButtonNearTextarea() {
+    const { textarea, form } = getSendButtonSearchRoot();
+    const root = form || document;
+    const candidates = Array.from(root.querySelectorAll?.('button, .interactable, .menu_button, [role="button"], [onclick], [title], [aria-label], .fa-solid, .fa-regular, .fa') || [])
+        .map(resolveClickableElement)
+        .filter(Boolean)
+        .filter((element, index, list) => list.indexOf(element) === index)
+        .filter((element) => element !== textarea && looksLikeSendButton(element));
+
+    if (!candidates.length) {
+        return null;
+    }
+
+    const afterTextarea = textarea
+        ? candidates.filter((element) => Boolean(textarea.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING))
+        : [];
+
+    return afterTextarea.at(-1) || candidates.at(-1);
+}
+
+function getSendButtonElement() {
+    for (const selector of SEND_BUTTON_SELECTORS) {
+        const element = document.querySelector(selector);
+
+        if (!element) {
+            continue;
+        }
+
+        return resolveClickableElement(element);
+    }
+
+    return findSendButtonNearTextarea();
+}
+
+function getIconElement(button) {
+    if (!button) {
+        return null;
+    }
+
+    const hasIconClass = Array.from(button.classList || [])
+        .some((className) => className === 'fa' || className.startsWith('fa-'));
+
+    if (hasIconClass) {
+        return button;
+    }
+
+    return button.querySelector('.fa-solid, .fa-regular, .fa, [class*="paper-plane"], [class*="location-arrow"]');
+}
+
+function setFallbackSendBusy(label) {
+    const { form } = getSendButtonSearchRoot();
+    const fallback = document.createElement('button');
+    fallback.type = 'button';
+    fallback.className = 'response-guard-send-fallback';
+    fallback.title = `${label}中，点击取消`;
+    fallback.setAttribute('aria-label', `取消 ${label}`);
+    fallback.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i>';
+    fallback.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        cancelResponseGuardGeneration();
+    });
+
+    if (form) {
+        form.appendChild(fallback);
+    } else {
+        document.body.appendChild(fallback);
+    }
+
+    responseGuardGeneration.sendButton = fallback;
+
+    return () => fallback.remove();
+}
+
+function setSendButtonBusy(label) {
+    const button = getSendButtonElement();
+
+    if (!button) {
+        return setFallbackSendBusy(label);
+    }
+
+    const icon = getIconElement(button);
+    const snapshot = {
+        button,
+        icon,
+        buttonClass: button.getAttribute('class'),
+        buttonTitle: button.getAttribute('title'),
+        buttonAriaLabel: button.getAttribute('aria-label'),
+        buttonDisabled: 'disabled' in button ? button.disabled : undefined,
+        buttonInnerHTML: icon ? null : button.innerHTML,
+        iconClass: icon?.getAttribute('class'),
+    };
+
+    button.classList.add('response-guard-send-busy');
+    button.setAttribute('title', `${label}中，点击取消`);
+    button.setAttribute('aria-label', `取消 ${label}`);
+
+    if ('disabled' in button) {
+        button.disabled = false;
+    }
+
+    if (icon) {
+        icon.classList.remove('fa-paper-plane', 'fa-location-arrow', 'fa-circle-stop', 'fa-stop');
+        icon.classList.add('fa-solid', 'fa-circle-notch', 'fa-spin');
+    } else {
+        button.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i>';
+    }
+
+    responseGuardGeneration.sendButton = button;
+
+    return () => {
+        if (snapshot.buttonClass === null) {
+            button.removeAttribute('class');
+        } else {
+            button.setAttribute('class', snapshot.buttonClass);
+        }
+
+        if (snapshot.buttonTitle === null) {
+            button.removeAttribute('title');
+        } else {
+            button.setAttribute('title', snapshot.buttonTitle);
+        }
+
+        if (snapshot.buttonAriaLabel === null) {
+            button.removeAttribute('aria-label');
+        } else {
+            button.setAttribute('aria-label', snapshot.buttonAriaLabel);
+        }
+
+        if ('disabled' in button && typeof snapshot.buttonDisabled === 'boolean') {
+            button.disabled = snapshot.buttonDisabled;
+        }
+
+        if (snapshot.icon && snapshot.iconClass !== null) {
+            snapshot.icon.setAttribute('class', snapshot.iconClass);
+        } else if (!snapshot.icon && snapshot.buttonInnerHTML !== null) {
+            button.innerHTML = snapshot.buttonInnerHTML;
+        }
+    };
+}
+
+function beginResponseGuardGeneration(label, { controls = [], silentBusy = false } = {}) {
+    if (responseGuardGeneration.active) {
+        if (!silentBusy) {
+            toastr.warning('Response Guard 正在生成；点击右下角旋转图标可取消。');
+        }
+        return null;
+    }
+
+    const controller = new AbortController();
+    const operation = {
+        id: responseGuardGeneration.id + 1,
+        label,
+        signal: controller.signal,
+    };
+
+    responseGuardGeneration.id = operation.id;
+    responseGuardGeneration.active = true;
+    responseGuardGeneration.cancelled = false;
+    responseGuardGeneration.label = label;
+    responseGuardGeneration.controller = controller;
+    responseGuardGeneration.controls = controls
+        .filter(Boolean)
+        .map((element) => ({
+            element,
+            disabled: 'disabled' in element ? element.disabled : undefined,
+            ariaDisabled: element.getAttribute?.('aria-disabled'),
+        }));
+    responseGuardGeneration.restoreSendButton = setSendButtonBusy(label);
+
+    for (const control of responseGuardGeneration.controls) {
+        if ('disabled' in control.element) {
+            control.element.disabled = true;
+        } else {
+            control.element.setAttribute?.('aria-disabled', 'true');
+            control.element.classList?.add('disabled');
+        }
+    }
+
+    return operation;
+}
+
+function endResponseGuardGeneration(operation) {
+    if (!operation || operation.id !== responseGuardGeneration.id) {
+        return;
+    }
+
+    for (const control of responseGuardGeneration.controls) {
+        if ('disabled' in control.element && typeof control.disabled === 'boolean') {
+            control.element.disabled = control.disabled;
+        } else if (control.ariaDisabled === null) {
+            control.element.removeAttribute?.('aria-disabled');
+        } else if (typeof control.ariaDisabled === 'string') {
+            control.element.setAttribute?.('aria-disabled', control.ariaDisabled);
+        }
+
+        control.element.classList?.remove('disabled');
+    }
+
+    responseGuardGeneration.restoreSendButton?.();
+    responseGuardGeneration.active = false;
+    responseGuardGeneration.cancelled = false;
+    responseGuardGeneration.label = '';
+    responseGuardGeneration.controller = null;
+    responseGuardGeneration.controls = [];
+    responseGuardGeneration.restoreSendButton = null;
+    responseGuardGeneration.sendButton = null;
+}
+
+function cancelResponseGuardGeneration() {
+    if (!responseGuardGeneration.active || responseGuardGeneration.cancelled) {
+        return;
+    }
+
+    responseGuardGeneration.cancelled = true;
+
+    try {
+        responseGuardGeneration.controller?.abort(new ResponseGuardCancelledError());
+    } catch (_) {
+        responseGuardGeneration.controller?.abort();
+    }
+
+    toastr.info(`已取消${responseGuardGeneration.label}。`);
+}
+
+function bindSendButtonCancelEvent() {
+    if (bindSendButtonCancelEvent.bound) {
+        return;
+    }
+
+    bindSendButtonCancelEvent.bound = true;
+
+    document.addEventListener('click', (event) => {
+        if (!responseGuardGeneration.active) {
+            return;
+        }
+
+        const button = responseGuardGeneration.sendButton || getSendButtonElement();
+        if (!button || !(button === event.target || button.contains(event.target))) {
+            return;
+        }
+
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        cancelResponseGuardGeneration();
+    }, true);
+}
+
 function getCurrentCharacterKey() {
     const context = getContext();
     const rawKey = context.characterId
@@ -260,29 +611,50 @@ REPLY>>>`;
 
 
 function buildInductionPrompt({ exampleReply, moduleRequirement }) {
-    return `你是 SillyTavern 回复格式修复规则的归纳助手。
+    return `你是 Response Guard 的“格式修复规则”编写助手。
+
+这段规则以后会被粘贴到「格式规范 / 检查规则」里，交给另一个检查模型使用。那个检查模型只会看到：
+1. 这段规则；
+2. 一条“最新回复”；
+并且它必须只返回 JSON，其中 append_text 只能是可直接追加到最新回复末尾的缺失内容。
 
 你的任务：
-根据用户提供的“某次正确回复样例”和“对某个模块的要求”，归纳出一段可直接粘贴到 Response Guard「格式规范 / 检查规则」里的格式修复指导。
+从“正确回复样例”和“模块要求”中归纳出一段独立、明确、可执行的检查/补齐规则，让后续检查模型不容易复读、重写正文或误补。
 
-归纳要求：
-1. 不要续写剧情，不要评价样例内容。
-2. 不要照抄样例里的具体剧情、角色动作、台词或变量值，只抽取格式结构、标签顺序、字段要求和缺失时的补齐规则。
-3. 输出必须是一段“独立可用”的格式修复指导：另一个 AI 只看到这段指导、完全看不到样例和用户要求时，也能知道应该检查什么、缺什么、怎么补。
-4. 禁止在输出中引用外部资料或输入来源，不要写“根据样例”“参考上文”“用户要求中提到”“你给的正确回复”“上述资料”等依赖上下文的说法。
-5. 必须把从样例和模块要求中归纳出的规则完整写出来，包括模块名称、出现位置、完整格式骨架、标签顺序、字段含义、可空项、必填项、缺失判断和补齐方式。
-6. 指导语要让另一个 AI 能检查“最新回复”是否缺少这个模块，并在缺失时只生成可追加的缺失部分。
-7. 需要写清楚：模块何时必须出现、内部字段/标签顺序、哪些内容可以为空、哪些内容不能省略、补齐时不要重写已有正文。
-8. 如果用户的模块要求和样例冲突，以用户的模块要求为准，并把冲突处理结果写成明确规则；不要说“与样例冲突”。
-9. 只输出格式修复指导正文，不要输出 JSON，不要 Markdown 代码块，不要解释你如何分析。
+硬性要求：
+1. 只抽取格式结构，不续写剧情，不评价样例，不生成角色回复。
+2. 不照抄样例里的具体剧情、动作、台词、数值、变量值、人名或一次性内容；格式骨架里的内容必须用占位说明，例如“此处填写本回合摘要”，不要用样例原文。
+3. 输出必须独立可用，不能依赖样例和模块要求存在。禁止写“根据样例”“参考上文”“用户要求”“你提供的回复”“上述内容”等依赖上下文的说法。
+4. 必须说明模块名称、必须出现的条件、推荐位置、完整格式骨架、字段/标签顺序、必填项、可空项、完整判定标准、缺失判定标准、补齐方式。
+5. 补齐方式必须符合 Response Guard 的能力：缺失时只生成 append_text，可直接追加到最新回复末尾；不要要求重写整条回复、移动已有段落、改写正文、删除内容或修正中间文本。
+6. 如果模块已经存在且基本完整，即使措辞和骨架略有差异，也应判定为完整；不要因为样式小差异重复补一份模块。
+7. 如果模块部分存在但关键必填项缺失，应优先只补缺失字段；如果无法安全只补字段，才补一个完整模块，并说明不要复述已有正文。
+8. 如果模块有 XML/HTML/变量标签，必须要求标签成对、嵌套正确、不能包裹正文；补齐时只输出该模块标签块，不输出正文。
+9. 如果模块要求与样例不一致，以模块要求为准，并把最终规则写清楚；不要提到冲突。
+10. 规则要克制、可操作，避免泛泛而谈。除非模块非常复杂，输出控制在 1200 字以内。
+11. 只输出格式修复指导正文；不要输出 JSON，不要 Markdown 代码块，不要解释分析过程。
 
-推荐输出结构：
+建议输出结构：
 【模块名称】
-【必须出现的位置】
+写出模块的固定名称或标签名。
+
+【出现条件与位置】
+写清何时必须出现，以及推荐追加在回复末尾或某个模块之后。
+
 【格式骨架】
-【检查规则】
+用占位说明给出完整骨架，不包含样例具体剧情。
+
+【完整判定】
+列出判定“已满足”的最低标准，允许等价表述，避免小差异重复补齐。
+
+【缺失判定】
+列出哪些情况才算缺失或不完整。
+
 【补齐规则】
+写清 append_text 应只包含什么；禁止重写正文、禁止复述最新回复、禁止解释。
+
 【注意事项】
+写出标签闭合、字段可空/必填、避免重复补齐等容易出错的点。
 
 某次正确回复样例：
 <<<CORRECT_REPLY
@@ -391,12 +763,13 @@ function focusTextareaStart(textarea) {
     textarea.scrollTop = 0;
 }
 
-async function generateWithCurrentApi(prompt) {
+async function generateWithCurrentApi(prompt, options = {}) {
     const { generateRaw } = getContext();
 
-    return generateRaw({
+    return awaitCancellable(generateRaw({
         prompt,
-    });
+        signal: options.signal,
+    }), options.signal);
 }
 
 function normalizeChatCompletionsUrl(baseUrl) {
@@ -453,7 +826,10 @@ async function generateWithCustomApi(prompt, profile, options = {}) {
                 : {}),
         },
         body: JSON.stringify(payload),
+        signal: options.signal,
     });
+
+    throwIfResponseGuardCancelled(options.signal);
 
     if (!response.ok) {
         const body = await response.text();
@@ -474,6 +850,7 @@ async function generateWithCustomApi(prompt, profile, options = {}) {
         throw new Error(`${actionName}达到长度上限，结果可能被截断。${lengthTip}`);
     }
 
+    throwIfResponseGuardCancelled(options.signal);
     return text;
 }
 
@@ -509,7 +886,7 @@ async function fetchCustomModels(profile) {
         .sort((a, b) => a.localeCompare(b));
 }
 
-async function runJudge(reply) {
+async function runJudge(reply, options = {}) {
     const profile = getActiveProfile();
     const prompt = buildJudgePrompt({
         rules: profile.rules,
@@ -517,14 +894,15 @@ async function runJudge(reply) {
     });
 
     const rawText = profile.apiMode === 'custom'
-        ? await generateWithCustomApi(prompt, profile, { maxTokens: 1024 })
-        : await generateWithCurrentApi(prompt);
+        ? await generateWithCustomApi(prompt, profile, { maxTokens: 1024, signal: options.signal })
+        : await generateWithCurrentApi(prompt, { signal: options.signal });
 
+    throwIfResponseGuardCancelled(options.signal);
     return parseJudgeResult(rawText);
 }
 
 
-async function runInduction({ exampleReply, moduleRequirement }) {
+async function runInduction({ exampleReply, moduleRequirement, signal }) {
     const profile = getActiveProfile();
     const prompt = buildInductionPrompt({ exampleReply, moduleRequirement });
     const rawText = profile.apiMode === 'custom'
@@ -532,8 +910,10 @@ async function runInduction({ exampleReply, moduleRequirement }) {
             maxTokens: 4096,
             actionName: '归纳结果',
             lengthTip: '请缩短“正确回复样例”，或把样例里无关剧情删掉后再生成。',
+            signal,
         })
-        : await generateWithCurrentApi(prompt);
+        : await generateWithCurrentApi(prompt, { signal });
+    throwIfResponseGuardCancelled(signal);
     const result = stripCodeFence(rawText);
 
     if (!result.trim()) {
@@ -544,7 +924,7 @@ async function runInduction({ exampleReply, moduleRequirement }) {
 }
 
 
-async function runRewrite({ reply, instruction }) {
+async function runRewrite({ reply, instruction, signal }) {
     const profile = getActiveProfile();
     const prompt = buildRewritePrompt({ reply, instruction });
     const rawText = profile.apiMode === 'custom'
@@ -552,8 +932,10 @@ async function runRewrite({ reply, instruction }) {
             maxTokens: 8192,
             actionName: '局部修改结果',
             lengthTip: '请缩短最新回复或修改要求，或改用输出上限更高的模型。',
+            signal,
         })
-        : await generateWithCurrentApi(prompt);
+        : await generateWithCurrentApi(prompt, { signal });
+    throwIfResponseGuardCancelled(signal);
     const result = stripCodeFence(rawText);
 
     if (!result.trim()) {
@@ -628,7 +1010,7 @@ function describeMissing(result) {
     return `缺失：${result.missing.join('、')}`;
 }
 
-async function checkLatestMessage({ repair }) {
+async function checkLatestMessage({ repair } = {}) {
     const latest = getLatestAssistantMessage();
 
     if (!latest) {
@@ -639,13 +1021,22 @@ async function checkLatestMessage({ repair }) {
     const buttons = [
         document.querySelector('#response_guard_check_only'),
         document.querySelector('#response_guard_check_and_fix'),
+        document.querySelector('#response_guard_magic_fix'),
     ];
+    const operationLabel = repair ? '格式修复' : '格式检查';
+    const operation = beginResponseGuardGeneration(operationLabel, {
+        controls: buttons,
+    });
 
-    buttons.forEach((button) => button?.setAttribute('disabled', 'disabled'));
+    if (!operation) {
+        return;
+    }
 
     try {
         toastr.info(`正在用「${getActiveProfile().name}」检查最新回复…`);
-        const result = await runJudge(latest.message.mes);
+
+        const result = await runJudge(latest.message.mes, { signal: operation.signal });
+        throwIfResponseGuardCancelled(operation.signal);
 
         if (result.complete) {
             toastr.success('最新回复已满足格式规范。');
@@ -662,16 +1053,20 @@ async function checkLatestMessage({ repair }) {
             return;
         }
 
+        throwIfResponseGuardCancelled(operation.signal);
         await appendMissingText(latest.index, latest.message, result.appendText);
         toastr.success(`已补齐最新回复。${describeMissing(result)}`);
     } catch (error) {
+        if (isCancellationError(error)) {
+            return;
+        }
+
         console.error('[Response Guard] Check failed:', error);
-        toastr.error(error?.message || '检查失败。');
+        toastr.error(error?.message || `${operationLabel}失败。`);
     } finally {
-        buttons.forEach((button) => button?.removeAttribute('disabled'));
+        endResponseGuardGeneration(operation);
     }
 }
-
 
 async function copyTextToClipboard(text) {
     if (navigator.clipboard?.writeText) {
@@ -710,11 +1105,18 @@ async function induceFormatGuidance() {
         return;
     }
 
-    buttonEl?.setAttribute('disabled', 'disabled');
+    const operation = beginResponseGuardGeneration('归纳格式修复指导', {
+        controls: [buttonEl],
+    });
+
+    if (!operation) {
+        return;
+    }
 
     try {
         toastr.info(`正在用「${profile.name}」归纳格式修复指导…`);
-        const guidance = await runInduction({ exampleReply, moduleRequirement });
+        const guidance = await runInduction({ exampleReply, moduleRequirement, signal: operation.signal });
+        throwIfResponseGuardCancelled(operation.signal);
         profile.inductionExample = exampleReply;
         profile.inductionRequirement = moduleRequirement;
         profile.inductionResult = guidance;
@@ -727,10 +1129,14 @@ async function induceFormatGuidance() {
         saveSettings();
         toastr.success('已生成格式修复指导。');
     } catch (error) {
+        if (isCancellationError(error)) {
+            return;
+        }
+
         console.error('[Response Guard] Induction failed:', error);
         toastr.error(error?.message || '归纳失败。');
     } finally {
-        buttonEl?.removeAttribute('disabled');
+        endResponseGuardGeneration(operation);
     }
 }
 
@@ -1230,11 +1636,18 @@ async function generateRewritePreview() {
         return;
     }
 
-    buttonEl?.setAttribute('disabled', 'disabled');
+    const operation = beginResponseGuardGeneration('局部修改预览', {
+        controls: [buttonEl],
+    });
+
+    if (!operation) {
+        return;
+    }
 
     try {
         toastr.info(`正在用「${profile.name}」生成局部修改预览…`);
-        const rewritten = await runRewrite({ reply: latest.message.mes, instruction });
+        const rewritten = await runRewrite({ reply: latest.message.mes, instruction, signal: operation.signal });
+        throwIfResponseGuardCancelled(operation.signal);
         profile.rewriteInstruction = instruction;
         profile.rewriteResult = rewritten;
 
@@ -1246,10 +1659,14 @@ async function generateRewritePreview() {
         saveSettings();
         toastr.success('已生成修改预览，确认满意后再应用到最新回复。');
     } catch (error) {
+        if (isCancellationError(error)) {
+            return;
+        }
+
         console.error('[Response Guard] Rewrite failed:', error);
         toastr.error(error?.message || '局部修改失败。');
     } finally {
-        buttonEl?.removeAttribute('disabled');
+        endResponseGuardGeneration(operation);
     }
 }
 
@@ -1439,7 +1856,7 @@ function closeRewriteQuickDialog() {
     document.body.classList.remove('response-guard-modal-open');
 }
 
-async function rewriteLatestWithInstruction(instruction, { apply = false } = {}) {
+async function rewriteLatestWithInstruction(instruction, { apply = false, signal } = {}) {
     const latest = getLatestAssistantMessage();
 
     if (!latest) {
@@ -1451,7 +1868,8 @@ async function rewriteLatestWithInstruction(instruction, { apply = false } = {})
         throw new Error('请先填写你想修改哪里、怎么修改。');
     }
 
-    const rewritten = await runRewrite({ reply: latest.message.mes, instruction: cleanInstruction });
+    const rewritten = await runRewrite({ reply: latest.message.mes, instruction: cleanInstruction, signal });
+    throwIfResponseGuardCancelled(signal);
 
     const profile = getActiveProfile();
     profile.rewriteInstruction = cleanInstruction;
@@ -1459,6 +1877,7 @@ async function rewriteLatestWithInstruction(instruction, { apply = false } = {})
     saveSettings();
 
     if (apply) {
+        throwIfResponseGuardCancelled(signal);
         await replaceMessageText(latest.index, latest.message, rewritten);
     }
 
@@ -1478,11 +1897,21 @@ async function generateRewriteQuickPreview() {
         return;
     }
 
-    buttonEl?.setAttribute('disabled', 'disabled');
+    const operation = beginResponseGuardGeneration('局部修改预览', {
+        controls: [buttonEl],
+    });
+
+    if (!operation) {
+        return;
+    }
 
     try {
         toastr.info(`正在用「${getActiveProfile().name}」生成局部修改预览…`);
-        const rewritten = await rewriteLatestWithInstruction(instruction, { apply: false });
+        const rewritten = await rewriteLatestWithInstruction(instruction, {
+            apply: false,
+            signal: operation.signal,
+        });
+        throwIfResponseGuardCancelled(operation.signal);
 
         if (resultEl) {
             resultEl.value = rewritten;
@@ -1499,10 +1928,14 @@ async function generateRewriteQuickPreview() {
 
         toastr.success('已生成修改预览，确认满意后再应用到最新回复。');
     } catch (error) {
+        if (isCancellationError(error)) {
+            return;
+        }
+
         console.error('[Response Guard] Quick rewrite failed:', error);
         toastr.error(error?.message || '局部修改失败。');
     } finally {
-        buttonEl?.removeAttribute('disabled');
+        endResponseGuardGeneration(operation);
     }
 }
 
@@ -2018,6 +2451,7 @@ async function init() {
 
     document.querySelector('#extensions_settings2')?.insertAdjacentHTML('beforeend', html);
     bindSettingsEvents();
+    bindSendButtonCancelEvent();
     ensureMagicMenuItems();
     bindMagicMenuEvents();
     exposeGlobalApi();
