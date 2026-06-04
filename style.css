@@ -581,6 +581,15 @@ body.response-guard-modal-open {
   overflow-wrap: anywhere;
 }
 
+.response-guard-preset-check-text,
+.response-guard-preset-text {
+  max-height: 6.5rem;
+  overflow: auto;
+  padding-right: 0.25rem;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
 .response-guard-preset-manager-list {
   display: flex;
   flex-direction: column;
@@ -612,6 +621,14 @@ body.response-guard-modal-open {
   margin: 8px 0;
 }
 
+.response-guard-preset-edit-modal {
+  width: min(820px, calc(100vw - 1.5rem));
+}
+
+#response_guard_rewrite_preset_edit_text {
+  min-height: 320px;
+}
+
 .response-guard-quick-preset-panel {
   margin-top: 0;
 }
@@ -620,6 +637,15 @@ body.response-guard-modal-open {
   .response-guard-preset-row,
   .response-guard-preset-edit-grid {
     grid-template-columns: 1fr;
+  }
+
+  #response_guard_rewrite_preset_edit_text {
+    min-height: 300px;
+  }
+
+  .response-guard-preset-check-text,
+  .response-guard-preset-text {
+    max-height: 5rem;
   }
 
   .response-guard-preset-actions {

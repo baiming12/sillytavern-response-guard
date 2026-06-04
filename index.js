@@ -1431,12 +1431,9 @@ function renderRewritePresetChecklist(container, { inputPrefix = 'response_guard
             const name = document.createElement('span');
             name.className = 'response-guard-preset-check-name';
             name.textContent = preset.name;
+            name.title = preset.text;
 
-            const text = document.createElement('span');
-            text.className = 'response-guard-preset-check-text';
-            text.textContent = preset.text;
-
-            body.append(name, text);
+            body.append(name);
             label.append(checkbox, body);
             section.appendChild(label);
         }
@@ -1513,12 +1510,9 @@ function renderRewritePresetManager() {
         const title = document.createElement('div');
         title.className = 'response-guard-preset-name';
         title.textContent = `${preset.name} · ${preset.scopeLabel}`;
+        title.title = preset.text;
 
-        const text = document.createElement('div');
-        text.className = 'response-guard-preset-text';
-        text.textContent = preset.text;
-
-        info.append(title, text);
+        info.append(title);
 
         const actions = document.createElement('div');
         actions.className = 'response-guard-preset-actions';
@@ -1623,30 +1617,146 @@ function saveRewritePresetFromForm() {
     toastr.success(editingId ? '已更新修改要求预设。' : '已保存修改要求预设。');
 }
 
+function ensureRewritePresetEditDialog() {
+    let dialog = document.querySelector('#response_guard_rewrite_preset_edit_dialog');
+
+    if (dialog) {
+        return dialog;
+    }
+
+    dialog = document.createElement('div');
+    dialog.id = 'response_guard_rewrite_preset_edit_dialog';
+    dialog.className = 'response-guard-modal hidden';
+    dialog.innerHTML = `
+      <div class="response-guard-modal-backdrop" data-response-guard-close="1"></div>
+      <div class="response-guard-modal-card response-guard-preset-edit-modal" role="dialog" aria-modal="true" aria-labelledby="response_guard_rewrite_preset_edit_title">
+        <div class="response-guard-modal-header">
+          <div>
+            <div id="response_guard_rewrite_preset_edit_title" class="response-guard-modal-title">编辑修改要求预设</div>
+            <div class="response-guard-modal-subtitle">只在这里展开长要求，列表里默认只显示预设名称。</div>
+          </div>
+          <button id="response_guard_rewrite_preset_edit_close" class="menu_button response-guard-btn" type="button" title="关闭">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+
+        <div class="response-guard-preset-edit-grid">
+          <select id="response_guard_rewrite_preset_edit_scope" class="text_pole">
+            <option value="global">全局预设</option>
+            <option value="local">本角色卡预设</option>
+          </select>
+          <input id="response_guard_rewrite_preset_edit_name" class="text_pole" type="text" placeholder="预设名称" />
+        </div>
+
+        <label for="response_guard_rewrite_preset_edit_text">
+          <span>预设内容</span>
+        </label>
+        <textarea id="response_guard_rewrite_preset_edit_text" class="text_pole textarea_compact" rows="16" placeholder="填写这个预设的具体要求。"></textarea>
+
+        <div class="response-guard-actions compact">
+          <button id="response_guard_rewrite_preset_edit_save" class="menu_button response-guard-primary" type="button">保存修改</button>
+          <button id="response_guard_rewrite_preset_edit_cancel" class="menu_button response-guard-btn" type="button">取消</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(dialog);
+
+    const close = () => closeRewritePresetEditDialog();
+    dialog.querySelector('#response_guard_rewrite_preset_edit_close')?.addEventListener('click', close);
+    dialog.querySelector('#response_guard_rewrite_preset_edit_cancel')?.addEventListener('click', close);
+    dialog.querySelector('.response-guard-modal-backdrop')?.addEventListener('click', close);
+    dialog.querySelector('#response_guard_rewrite_preset_edit_save')?.addEventListener('click', () => saveRewritePresetEditDialog());
+    dialog.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            closeRewritePresetEditDialog();
+        }
+    });
+
+    return dialog;
+}
+
+function closeRewritePresetEditDialog() {
+    const dialog = document.querySelector('#response_guard_rewrite_preset_edit_dialog');
+    dialog?.classList.add('hidden');
+
+    if (!document.querySelector('#response_guard_quick_rewrite_dialog:not(.hidden)')) {
+        document.body.classList.remove('response-guard-modal-open');
+    }
+}
+
 function editRewritePreset(scope, presetId) {
     const preset = getRewritePresetByScopeAndId(scope, presetId);
-    const formEl = document.querySelector('#response_guard_rewrite_preset_form');
-    const scopeEl = document.querySelector('#response_guard_rewrite_preset_scope');
-    const nameEl = document.querySelector('#response_guard_rewrite_preset_name');
-    const textEl = document.querySelector('#response_guard_rewrite_preset_text');
-    const saveButtonEl = document.querySelector('#response_guard_save_rewrite_preset');
 
     if (!preset) {
         toastr.warning('没有找到这个预设，可能已经被删除。');
         return;
     }
 
+    const dialog = ensureRewritePresetEditDialog();
+    const scopeEl = dialog.querySelector('#response_guard_rewrite_preset_edit_scope');
+    const localOptionEl = scopeEl?.querySelector('option[value="local"]');
+    const nameEl = dialog.querySelector('#response_guard_rewrite_preset_edit_name');
+    const textEl = dialog.querySelector('#response_guard_rewrite_preset_edit_text');
+
+    if (localOptionEl) {
+        localOptionEl.textContent = `本角色卡预设：${getCurrentCharacterName()}`;
+        localOptionEl.disabled = !getCurrentCharacterKey();
+    }
+
+    dialog.dataset.editingId = preset.id;
+    dialog.dataset.editingScope = scope;
     if (scopeEl) scopeEl.value = scope === 'local' ? 'local' : 'global';
     if (nameEl) nameEl.value = preset.name;
-    if (textEl) {
-        textEl.value = preset.text;
-        textEl.focus();
+    if (textEl) textEl.value = preset.text;
+
+    dialog.classList.remove('hidden');
+    document.body.classList.add('response-guard-modal-open');
+
+    requestAnimationFrame(() => {
+        textEl?.focus();
+        textEl?.setSelectionRange(textEl.value.length, textEl.value.length);
+    });
+}
+
+function saveRewritePresetEditDialog() {
+    const dialog = ensureRewritePresetEditDialog();
+    const scopeEl = dialog.querySelector('#response_guard_rewrite_preset_edit_scope');
+    const nameEl = dialog.querySelector('#response_guard_rewrite_preset_edit_name');
+    const textEl = dialog.querySelector('#response_guard_rewrite_preset_edit_text');
+    const oldScope = dialog.dataset.editingScope === 'local' ? 'local' : 'global';
+    const editingId = dialog.dataset.editingId;
+    const scope = scopeEl?.value === 'local' ? 'local' : 'global';
+    const name = String(nameEl?.value || '').trim();
+    const text = String(textEl?.value || '').trim();
+
+    if (!editingId) {
+        toastr.warning('没有正在编辑的预设。');
+        return;
     }
-    if (saveButtonEl) saveButtonEl.textContent = '保存修改';
-    if (formEl) {
-        formEl.dataset.editingId = preset.id;
-        formEl.dataset.editingScope = scope;
+
+    if (scope === 'local' && !getCurrentCharacterKey()) {
+        toastr.warning('未识别到当前角色卡，暂时不能保存本角色卡预设。');
+        return;
     }
+
+    if (!text) {
+        toastr.warning('请先填写预设内容。');
+        return;
+    }
+
+    const preset = normalizeRewritePreset({
+        id: editingId,
+        name: name || text.slice(0, 18) || '未命名预设',
+        text,
+    });
+
+    removeRewritePreset(oldScope, editingId);
+    getRewritePresetListByScope(scope, true).push(preset);
+    closeRewritePresetEditDialog();
+    renderRewritePresetAreas();
+    saveSettings();
+    toastr.success('已更新修改要求预设。');
 }
 
 function deleteRewritePreset(scope, presetId) {
