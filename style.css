@@ -592,6 +592,14 @@ body.response-guard-modal-open {
   margin: 8px 0;
 }
 
+.response-guard-preset-edit-modal {
+  width: min(820px, calc(100vw - 1.5rem));
+}
+
+#response_guard_rewrite_preset_edit_text {
+  min-height: 320px;
+}
+
 .response-guard-quick-preset-panel {
   margin-top: 0;
 }
@@ -600,6 +608,10 @@ body.response-guard-modal-open {
   .response-guard-preset-row,
   .response-guard-preset-edit-grid {
     grid-template-columns: 1fr;
+  }
+
+  #response_guard_rewrite_preset_edit_text {
+    min-height: 300px;
   }
 
   .response-guard-preset-check-text,
