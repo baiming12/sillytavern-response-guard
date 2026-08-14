@@ -69,6 +69,36 @@
   gap: 0.5rem;
 }
 
+.response-guard-debug-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.6rem;
+  align-items: center;
+  margin-top: 0.8rem;
+}
+
+.response-guard-debug-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.response-guard-debug-check input {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 520px) {
+  .response-guard-debug-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .response-guard-debug-controls .response-guard-btn {
+    width: 100%;
+  }
+}
+
 .response-guard-model-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -429,6 +459,25 @@
 .response-guard-modal-card textarea {
   width: 100%;
   resize: vertical;
+}
+
+.response-guard-debug-modal {
+  width: min(920px, calc(100vw - 1.5rem));
+}
+
+.response-guard-debug-text {
+  min-height: 260px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  overflow-wrap: normal;
+  white-space: pre;
+}
+
+@media (max-width: 700px) {
+  .response-guard-debug-text {
+    min-height: 240px;
+  }
 }
 
 @media (max-width: 700px) {

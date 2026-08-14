@@ -32,9 +32,14 @@ const DEFAULT_SETTINGS = Object.freeze({
     activeProfileId: 'default',
     characterBindings: {},
     autoRepairEnabled: false,
+    debugEnabled: false,
     globalRewritePresets: [],
     characterRewritePresets: {},
 });
+
+const debugRuntime = {
+    lastRecord: null,
+};
 
 function getContext() {
     return SillyTavern.getContext();
@@ -140,6 +145,10 @@ function getSettings() {
 
     if (typeof settings.autoRepairEnabled !== 'boolean') {
         settings.autoRepairEnabled = Boolean(settings.autoRepairEnabled);
+    }
+
+    if (typeof settings.debugEnabled !== 'boolean') {
+        settings.debugEnabled = false;
     }
 
     if (!settings.characterBindings || typeof settings.characterBindings !== 'object' || Array.isArray(settings.characterBindings)) {
@@ -822,6 +831,81 @@ function buildCustomApiPayload(prompt, profile, options = {}) {
     return payload;
 }
 
+function buildDebugRequestInput(prompt, profile, options = {}) {
+    if (profile.apiMode === 'current') {
+        return {
+            mode: 'current',
+            transport: 'SillyTavern.generateRaw',
+            body: { prompt },
+        };
+    }
+
+    const headers = {
+        'Content-Type': 'application/json',
+        ...(profile.customApiKey.trim()
+            ? { Authorization: 'Bearer [API Key 已隐藏]' }
+            : {}),
+    };
+
+    return {
+        mode: profile.apiMode,
+        transport: profile.apiMode === 'proxy' ? 'Response Guard 本地代理' : '浏览器直连',
+        ...(profile.apiMode === 'proxy' ? { proxy: profile.proxyBaseUrl.trim() } : {}),
+        endpoint: normalizeChatCompletionsUrl(profile.customBaseUrl),
+        method: 'POST',
+        headers,
+        body: buildCustomApiPayload(prompt, profile, options),
+    };
+}
+
+function stringifyDebugValue(value) {
+    if (typeof value === 'string') {
+        return value;
+    }
+
+    try {
+        return JSON.stringify(value, null, 2);
+    } catch (_) {
+        return String(value ?? '');
+    }
+}
+
+function beginDebugRequest(prompt, profile, options = {}) {
+    if (!getSettings().debugEnabled) {
+        return null;
+    }
+
+    const record = {
+        id: `debug_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        operation: options.actionName || 'AI 请求',
+        startedAt: new Date().toISOString(),
+        finishedAt: '',
+        status: 'running',
+        input: stringifyDebugValue(buildDebugRequestInput(prompt, profile, options)),
+        output: '',
+        error: '',
+    };
+
+    debugRuntime.lastRecord = record;
+    syncDebugViewerButton();
+    renderDebugDialog();
+    return record.id;
+}
+
+function completeDebugRequest(recordId, { output, error } = {}) {
+    const record = debugRuntime.lastRecord;
+    if (!recordId || !record || record.id !== recordId) {
+        return;
+    }
+
+    record.finishedAt = new Date().toISOString();
+    record.status = error ? 'error' : 'success';
+    record.output = output === undefined || output === null ? '' : stringifyDebugValue(output);
+    record.error = error ? String(error) : '';
+    syncDebugViewerButton();
+    renderDebugDialog();
+}
+
 async function readApiError(response) {
     const rawBody = await response.text();
 
@@ -875,10 +959,16 @@ async function generateWithCustomApi(prompt, profile, options = {}) {
 
     if (!response.ok) {
         const body = await response.text();
+        options.onDebugResponse?.({
+            http_status: response.status,
+            status_text: response.statusText,
+            error_body: body,
+        });
         throw new Error(`自定义 API 请求失败：${response.status} ${response.statusText}${body ? ` — ${body}` : ''}`);
     }
 
     const data = await response.json();
+    options.onDebugResponse?.(data);
     const choice = data?.choices?.[0];
     const text = getChoiceText(choice);
 
@@ -916,10 +1006,16 @@ async function generateWithProxyApi(prompt, profile, options = {}) {
 
     if (!response.ok) {
         const detail = await readApiError(response);
+        options.onDebugResponse?.({
+            http_status: response.status,
+            status_text: response.statusText,
+            error: detail,
+        });
         throw new Error(`代理 API 请求失败：${response.status} ${response.statusText}${detail ? ` — ${detail}` : ''}`);
     }
 
     const data = await response.json();
+    options.onDebugResponse?.(data);
     const choice = data?.choices?.[0];
     const text = getChoiceText(choice);
 
@@ -1025,15 +1121,39 @@ async function testProxyConnection(profile) {
 }
 
 async function generateWithConfiguredApi(prompt, profile, options = {}) {
-    if (profile.apiMode === 'custom') {
-        return generateWithCustomApi(prompt, profile, options);
-    }
+    const recordId = beginDebugRequest(prompt, profile, options);
+    let rawResponse;
+    const requestOptions = recordId
+        ? {
+            ...options,
+            onDebugResponse: (value) => {
+                rawResponse = value;
+            },
+        }
+        : options;
 
-    if (profile.apiMode === 'proxy') {
-        return generateWithProxyApi(prompt, profile, options);
-    }
+    try {
+        let output;
 
-    return generateWithCurrentApi(prompt, options);
+        if (profile.apiMode === 'custom') {
+            output = await generateWithCustomApi(prompt, profile, requestOptions);
+        } else if (profile.apiMode === 'proxy') {
+            output = await generateWithProxyApi(prompt, profile, requestOptions);
+        } else {
+            output = await generateWithCurrentApi(prompt, requestOptions);
+        }
+
+        completeDebugRequest(recordId, {
+            output: rawResponse ?? output,
+        });
+        return output;
+    } catch (error) {
+        completeDebugRequest(recordId, {
+            output: rawResponse,
+            error: error?.message || error,
+        });
+        throw error;
+    }
 }
 
 async function fetchConfiguredModels(profile) {
@@ -1051,6 +1171,7 @@ async function runJudge(reply, options = {}) {
 
     const rawText = await generateWithConfiguredApi(prompt, profile, {
         maxTokens: 8192,
+        actionName: options.actionName || '格式检查',
         signal: options.signal,
     });
 
@@ -1193,7 +1314,10 @@ async function checkLatestMessage({ repair, auto = false } = {}) {
             toastr.info(`正在用「${getActiveProfile().name}」检查最新回复…`);
         }
 
-        const result = await runJudge(latest.message.mes, { signal: operation.signal });
+        const result = await runJudge(latest.message.mes, {
+            actionName: operationLabel,
+            signal: operation.signal,
+        });
         throwIfResponseGuardCancelled(operation.signal);
 
         if (result.complete) {
@@ -1367,6 +1491,150 @@ async function copyTextToClipboard(text) {
     textarea.select();
     document.execCommand('copy');
     textarea.remove();
+}
+
+function getDebugOutputText(record = debugRuntime.lastRecord) {
+    if (!record) {
+        return '';
+    }
+
+    if (record.status === 'running') {
+        return '请求仍在进行中。';
+    }
+
+    const parts = [];
+    if (record.output) {
+        parts.push(record.output);
+    }
+
+    if (record.error) {
+        parts.push(`--- ERROR ---\n${record.error}`);
+    }
+
+    return parts.join('\n\n') || '模型没有返回可显示的内容。';
+}
+
+function syncDebugViewerButton() {
+    const button = document.querySelector('#response_guard_view_debug');
+    if (!button) {
+        return;
+    }
+
+    button.toggleAttribute('disabled', !debugRuntime.lastRecord);
+}
+
+function renderDebugDialog() {
+    const dialog = document.querySelector('#response_guard_debug_dialog');
+    const record = debugRuntime.lastRecord;
+    if (!dialog || !record) {
+        return;
+    }
+
+    const statusText = record.status === 'running'
+        ? '请求中'
+        : record.status === 'success'
+            ? '成功'
+            : '失败';
+    const startedAt = new Date(record.startedAt).toLocaleString();
+    const metaEl = dialog.querySelector('#response_guard_debug_meta');
+    const inputEl = dialog.querySelector('#response_guard_debug_input');
+    const outputEl = dialog.querySelector('#response_guard_debug_output');
+
+    if (metaEl) metaEl.textContent = `${record.operation} · ${statusText} · ${startedAt}`;
+    if (inputEl) inputEl.value = record.input;
+    if (outputEl) outputEl.value = getDebugOutputText(record);
+}
+
+function ensureDebugDialog() {
+    let dialog = document.querySelector('#response_guard_debug_dialog');
+    if (dialog) {
+        return dialog;
+    }
+
+    dialog = document.createElement('div');
+    dialog.id = 'response_guard_debug_dialog';
+    dialog.className = 'response-guard-modal hidden';
+    dialog.innerHTML = `
+      <div class="response-guard-modal-backdrop" data-response-guard-close="1"></div>
+      <div class="response-guard-modal-card response-guard-debug-modal" role="dialog" aria-modal="true" aria-labelledby="response_guard_debug_title">
+        <div class="response-guard-modal-header">
+          <div>
+            <div id="response_guard_debug_title" class="response-guard-modal-title">最近一次 AI 请求</div>
+            <div id="response_guard_debug_meta" class="response-guard-modal-subtitle"></div>
+          </div>
+          <button id="response_guard_debug_close" class="menu_button response-guard-btn" type="button" title="关闭">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+
+        <label for="response_guard_debug_input">
+          <span>请求输入（API Key 已隐藏）</span>
+        </label>
+        <textarea id="response_guard_debug_input" class="text_pole textarea_compact response-guard-debug-text" rows="14" readonly spellcheck="false"></textarea>
+
+        <label for="response_guard_debug_output">
+          <span>原始输出</span>
+        </label>
+        <textarea id="response_guard_debug_output" class="text_pole textarea_compact response-guard-debug-text" rows="14" readonly spellcheck="false"></textarea>
+
+        <div class="response-guard-actions compact">
+          <button id="response_guard_debug_copy_input" class="menu_button response-guard-btn" type="button">复制输入</button>
+          <button id="response_guard_debug_copy_output" class="menu_button response-guard-btn" type="button">复制输出</button>
+          <button id="response_guard_debug_done" class="menu_button response-guard-primary" type="button">关闭</button>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(dialog);
+
+    const close = () => closeDebugDialog();
+    dialog.querySelector('#response_guard_debug_close')?.addEventListener('click', close);
+    dialog.querySelector('#response_guard_debug_done')?.addEventListener('click', close);
+    dialog.querySelector('.response-guard-modal-backdrop')?.addEventListener('click', close);
+    dialog.querySelector('#response_guard_debug_copy_input')?.addEventListener('click', async () => {
+        await copyTextToClipboard(debugRuntime.lastRecord?.input || '');
+        toastr.success('已复制请求输入。');
+    });
+    dialog.querySelector('#response_guard_debug_copy_output')?.addEventListener('click', async () => {
+        await copyTextToClipboard(getDebugOutputText());
+        toastr.success('已复制原始输出。');
+    });
+    dialog.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            closeDebugDialog();
+        }
+    });
+
+    return dialog;
+}
+
+function openDebugDialog() {
+    if (!debugRuntime.lastRecord) {
+        toastr.warning('还没有可查看的调试记录。');
+        return;
+    }
+
+    const dialog = ensureDebugDialog();
+    renderDebugDialog();
+    dialog.classList.remove('hidden');
+    document.body.classList.add('response-guard-modal-open');
+
+    requestAnimationFrame(() => {
+        dialog.querySelector('.response-guard-modal-card')?.scrollTo({ top: 0 });
+        const inputEl = dialog.querySelector('#response_guard_debug_input');
+        const outputEl = dialog.querySelector('#response_guard_debug_output');
+        if (inputEl) inputEl.scrollTop = 0;
+        if (outputEl) outputEl.scrollTop = 0;
+    });
+}
+
+function closeDebugDialog() {
+    const dialog = document.querySelector('#response_guard_debug_dialog');
+    dialog?.classList.add('hidden');
+
+    if (!document.querySelector('.response-guard-modal:not(.hidden)')) {
+        document.body.classList.remove('response-guard-modal-open');
+    }
 }
 
 async function induceFormatGuidance() {
@@ -2536,6 +2804,7 @@ function syncFieldsFromActiveProfile() {
     const profileNameEl = document.querySelector('#response_guard_profile_name');
     const rulesEl = document.querySelector('#response_guard_rules');
     const autoRepairEl = document.querySelector('#response_guard_auto_repair_enabled');
+    const debugEnabledEl = document.querySelector('#response_guard_debug_enabled');
     const apiModeEl = document.querySelector('#response_guard_api_mode');
     const temperatureEl = document.querySelector('#response_guard_temperature');
     const proxyBaseUrlEl = document.querySelector('#response_guard_proxy_base_url');
@@ -2551,6 +2820,7 @@ function syncFieldsFromActiveProfile() {
     if (profileNameEl) profileNameEl.value = profile.name;
     if (rulesEl) rulesEl.value = profile.rules;
     if (autoRepairEl) autoRepairEl.checked = Boolean(settings.autoRepairEnabled);
+    if (debugEnabledEl) debugEnabledEl.checked = Boolean(settings.debugEnabled);
     if (apiModeEl) apiModeEl.value = profile.apiMode;
     if (temperatureEl) temperatureEl.value = String(profile.temperature);
     if (proxyBaseUrlEl) proxyBaseUrlEl.value = profile.proxyBaseUrl;
@@ -2572,6 +2842,7 @@ function syncFieldsFromActiveProfile() {
     populateProfilePicker();
     populateModelPicker([]);
     syncCustomApiVisibility();
+    syncDebugViewerButton();
     syncCharacterBindingText();
     renderRewritePresetAreas();
 }
@@ -2589,6 +2860,8 @@ function bindSettingsEvents() {
 
     const rulesEl = document.querySelector('#response_guard_rules');
     const autoRepairEl = document.querySelector('#response_guard_auto_repair_enabled');
+    const debugEnabledEl = document.querySelector('#response_guard_debug_enabled');
+    const viewDebugEl = document.querySelector('#response_guard_view_debug');
     const apiModeEl = document.querySelector('#response_guard_api_mode');
     const temperatureEl = document.querySelector('#response_guard_temperature');
     const proxyBaseUrlEl = document.querySelector('#response_guard_proxy_base_url');
@@ -2620,6 +2893,8 @@ function bindSettingsEvents() {
         || !unbindProfileEl
         || !rulesEl
         || !autoRepairEl
+        || !debugEnabledEl
+        || !viewDebugEl
         || !apiModeEl
         || !temperatureEl
         || !proxyBaseUrlEl
@@ -2746,6 +3021,21 @@ function bindSettingsEvents() {
         saveSettings();
         toastr.info(settings.autoRepairEnabled ? '已开启自动格式修复。' : '已关闭自动格式修复。');
     });
+
+    debugEnabledEl.addEventListener('change', () => {
+        settings.debugEnabled = Boolean(debugEnabledEl.checked);
+
+        if (!settings.debugEnabled) {
+            debugRuntime.lastRecord = null;
+            closeDebugDialog();
+        }
+
+        syncDebugViewerButton();
+        saveSettings();
+        toastr.info(settings.debugEnabled ? '已开启请求调试记录。' : '已关闭并清空请求调试记录。');
+    });
+
+    viewDebugEl.addEventListener('click', () => openDebugDialog());
 
     apiModeEl.addEventListener('change', () => {
         getActiveProfile().apiMode = apiModeEl.value;
