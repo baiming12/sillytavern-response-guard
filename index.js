@@ -1050,7 +1050,7 @@ async function runJudge(reply, options = {}) {
     });
 
     const rawText = await generateWithConfiguredApi(prompt, profile, {
-        maxTokens: 1024,
+        maxTokens: 8192,
         signal: options.signal,
     });
 
@@ -1063,7 +1063,7 @@ async function runInduction({ exampleReply, moduleRequirement, signal }) {
     const profile = getActiveProfile();
     const prompt = buildInductionPrompt({ exampleReply, moduleRequirement });
     const rawText = await generateWithConfiguredApi(prompt, profile, {
-        maxTokens: 4096,
+        maxTokens: 8192,
         actionName: '归纳结果',
         lengthTip: '请缩短“正确回复样例”，或把样例里无关剧情删掉后再生成。',
         signal,
