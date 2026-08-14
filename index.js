@@ -15,6 +15,7 @@ const DEFAULT_PROFILE = Object.freeze({
 
 检查时只判断“最新回复”是否满足这些要求，不要要求重写正文。`,
     apiMode: 'current',
+    proxyBaseUrl: 'http://127.0.0.1:39125',
     customBaseUrl: '',
     customModel: '',
     customApiKey: '',
@@ -30,6 +31,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     profiles: [{ id: 'default', ...DEFAULT_PROFILE }],
     activeProfileId: 'default',
     characterBindings: {},
+    autoRepairEnabled: false,
     globalRewritePresets: [],
     characterRewritePresets: {},
 });
@@ -78,11 +80,18 @@ function normalizeRewritePresetList(list) {
 }
 
 function normalizeProfile(profile = {}) {
+    const apiMode = ['current', 'custom', 'proxy'].includes(profile.apiMode)
+        ? profile.apiMode
+        : 'current';
+
     return {
         id: typeof profile.id === 'string' && profile.id.trim() ? profile.id : makeProfileId(),
         name: typeof profile.name === 'string' && profile.name.trim() ? profile.name : '未命名方案',
         rules: typeof profile.rules === 'string' ? profile.rules : DEFAULT_PROFILE.rules,
-        apiMode: profile.apiMode === 'custom' ? 'custom' : 'current',
+        apiMode,
+        proxyBaseUrl: typeof profile.proxyBaseUrl === 'string' && profile.proxyBaseUrl.trim()
+            ? profile.proxyBaseUrl
+            : DEFAULT_PROFILE.proxyBaseUrl,
         customBaseUrl: typeof profile.customBaseUrl === 'string' ? profile.customBaseUrl : '',
         customModel: typeof profile.customModel === 'string' ? profile.customModel : '',
         customApiKey: typeof profile.customApiKey === 'string' ? profile.customApiKey : '',
@@ -111,6 +120,7 @@ function getSettings() {
             name: '默认方案',
             rules: settings.rules,
             apiMode: settings.apiMode,
+            proxyBaseUrl: settings.proxyBaseUrl,
             customBaseUrl: settings.customBaseUrl,
             customModel: settings.customModel,
             customApiKey: settings.customApiKey,
@@ -126,6 +136,10 @@ function getSettings() {
 
     if (!settings.profiles.some((profile) => profile.id === settings.activeProfileId)) {
         settings.activeProfileId = settings.profiles[0].id;
+    }
+
+    if (typeof settings.autoRepairEnabled !== 'boolean') {
+        settings.autoRepairEnabled = Boolean(settings.autoRepairEnabled);
     }
 
     if (!settings.characterBindings || typeof settings.characterBindings !== 'object' || Array.isArray(settings.characterBindings)) {
@@ -201,6 +215,16 @@ const responseGuardGeneration = {
     controls: [],
     restoreSendButton: null,
     sendButton: null,
+};
+
+const autoRepairRuntime = {
+    timer: null,
+    stopped: false,
+    startSignature: '',
+    lastProcessedSignature: '',
+    suppressUntil: 0,
+    generationStartedAt: 0,
+    messageReceivedAt: 0,
 };
 
 class ResponseGuardCancelledError extends Error {
@@ -443,6 +467,7 @@ function beginResponseGuardGeneration(label, { controls = [], silentBusy = false
             ariaDisabled: element.getAttribute?.('aria-disabled'),
         }));
     responseGuardGeneration.restoreSendButton = setSendButtonBusy(label);
+    autoRepairRuntime.suppressUntil = Date.now() + 1200;
 
     for (const control of responseGuardGeneration.controls) {
         if ('disabled' in control.element) {
@@ -481,6 +506,7 @@ function endResponseGuardGeneration(operation) {
     responseGuardGeneration.controls = [];
     responseGuardGeneration.restoreSendButton = null;
     responseGuardGeneration.sendButton = null;
+    autoRepairRuntime.suppressUntil = Date.now() + 1200;
 }
 
 function cancelResponseGuardGeneration() {
@@ -611,50 +637,29 @@ REPLY>>>`;
 
 
 function buildInductionPrompt({ exampleReply, moduleRequirement }) {
-    return `你是 Response Guard 的“格式修复规则”编写助手。
-
-这段规则以后会被粘贴到「格式规范 / 检查规则」里，交给另一个检查模型使用。那个检查模型只会看到：
-1. 这段规则；
-2. 一条“最新回复”；
-并且它必须只返回 JSON，其中 append_text 只能是可直接追加到最新回复末尾的缺失内容。
+    return `你是 SillyTavern 回复格式修复规则的归纳助手。
 
 你的任务：
-从“正确回复样例”和“模块要求”中归纳出一段独立、明确、可执行的检查/补齐规则，让后续检查模型不容易复读、重写正文或误补。
+根据用户提供的“某次正确回复样例”和“对某个模块的要求”，归纳出一段可直接粘贴到 Response Guard「格式规范 / 检查规则」里的格式修复指导。
 
-硬性要求：
-1. 只抽取格式结构，不续写剧情，不评价样例，不生成角色回复。
-2. 不照抄样例里的具体剧情、动作、台词、数值、变量值、人名或一次性内容；格式骨架里的内容必须用占位说明，例如“此处填写本回合摘要”，不要用样例原文。
-3. 输出必须独立可用，不能依赖样例和模块要求存在。禁止写“根据样例”“参考上文”“用户要求”“你提供的回复”“上述内容”等依赖上下文的说法。
-4. 必须说明模块名称、必须出现的条件、推荐位置、完整格式骨架、字段/标签顺序、必填项、可空项、完整判定标准、缺失判定标准、补齐方式。
-5. 补齐方式必须符合 Response Guard 的能力：缺失时只生成 append_text，可直接追加到最新回复末尾；不要要求重写整条回复、移动已有段落、改写正文、删除内容或修正中间文本。
-6. 如果模块已经存在且基本完整，即使措辞和骨架略有差异，也应判定为完整；不要因为样式小差异重复补一份模块。
-7. 如果模块部分存在但关键必填项缺失，应优先只补缺失字段；如果无法安全只补字段，才补一个完整模块，并说明不要复述已有正文。
-8. 如果模块有 XML/HTML/变量标签，必须要求标签成对、嵌套正确、不能包裹正文；补齐时只输出该模块标签块，不输出正文。
-9. 如果模块要求与样例不一致，以模块要求为准，并把最终规则写清楚；不要提到冲突。
-10. 规则要克制、可操作，避免泛泛而谈。除非模块非常复杂，输出控制在 1200 字以内。
-11. 只输出格式修复指导正文；不要输出 JSON，不要 Markdown 代码块，不要解释分析过程。
+归纳要求：
+1. 不要续写剧情，不要评价样例内容。
+2. 不要照抄样例里的具体剧情、角色动作、台词或变量值，只抽取格式结构、标签顺序、字段要求和缺失时的补齐规则。
+3. 输出必须是一段“独立可用”的格式修复指导：另一个 AI 只看到这段指导、完全看不到样例和用户要求时，也能知道应该检查什么、缺什么、怎么补。
+4. 禁止在输出中引用外部资料或输入来源，不要写“根据样例”“参考上文”“用户要求中提到”“你给的正确回复”“上述资料”等依赖上下文的说法。
+5. 必须把从样例和模块要求中归纳出的规则完整写出来，包括模块名称、出现位置、完整格式骨架、标签顺序、字段含义、可空项、必填项、缺失判断和补齐方式。
+6. 指导语要让另一个 AI 能检查“最新回复”是否缺少这个模块，并在缺失时只生成可追加的缺失部分。
+7. 需要写清楚：模块何时必须出现、内部字段/标签顺序、哪些内容可以为空、哪些内容不能省略、补齐时不要重写已有正文。
+8. 如果用户的模块要求和样例冲突，以用户的模块要求为准，并把冲突处理结果写成明确规则；不要说“与样例冲突”。
+9. 只输出格式修复指导正文，不要输出 JSON，不要 Markdown 代码块，不要解释你如何分析。
 
-建议输出结构：
+推荐输出结构：
 【模块名称】
-写出模块的固定名称或标签名。
-
-【出现条件与位置】
-写清何时必须出现，以及推荐追加在回复末尾或某个模块之后。
-
+【必须出现的位置】
 【格式骨架】
-用占位说明给出完整骨架，不包含样例具体剧情。
-
-【完整判定】
-列出判定“已满足”的最低标准，允许等价表述，避免小差异重复补齐。
-
-【缺失判定】
-列出哪些情况才算缺失或不完整。
-
+【检查规则】
 【补齐规则】
-写清 append_text 应只包含什么；禁止重写正文、禁止复述最新回复、禁止解释。
-
 【注意事项】
-写出标签闭合、字段可空/必填、避免重复补齐等容易出错的点。
 
 某次正确回复样例：
 <<<CORRECT_REPLY
@@ -792,15 +797,12 @@ function normalizeModelsUrl(baseUrl) {
     return `${trimmed}/models`;
 }
 
-async function generateWithCustomApi(prompt, profile, options = {}) {
-    if (!profile.customBaseUrl.trim()) {
-        throw new Error('请先填写自定义 API 地址。');
-    }
+function normalizeProxyUrl(baseUrl, path) {
+    const trimmed = baseUrl.trim().replace(/\/+$/, '');
+    return `${trimmed}${path}`;
+}
 
-    if (!profile.customModel.trim()) {
-        throw new Error('请先填写模型名。');
-    }
-
+function buildCustomApiPayload(prompt, profile, options = {}) {
     const payload = {
         model: profile.customModel.trim(),
         temperature: Number(profile.temperature) || DEFAULT_PROFILE.temperature,
@@ -816,6 +818,46 @@ async function generateWithCustomApi(prompt, profile, options = {}) {
     if (Number.isFinite(options.maxTokens) && options.maxTokens > 0) {
         payload.max_tokens = Math.floor(options.maxTokens);
     }
+
+    return payload;
+}
+
+async function readApiError(response) {
+    const rawBody = await response.text();
+
+    if (!rawBody) {
+        return '';
+    }
+
+    try {
+        const data = JSON.parse(rawBody);
+        return String(data?.error?.message || data?.error || data?.message || rawBody);
+    } catch (_) {
+        return rawBody;
+    }
+}
+
+function validateCustomApiProfile(profile) {
+    if (!profile.customBaseUrl.trim()) {
+        throw new Error('请先填写自定义 API 地址。');
+    }
+
+    if (!profile.customModel.trim()) {
+        throw new Error('请先填写模型名。');
+    }
+}
+
+function validateProxyProfile(profile) {
+    validateCustomApiProfile(profile);
+
+    if (!profile.proxyBaseUrl.trim()) {
+        throw new Error('请先填写本地代理地址。');
+    }
+}
+
+async function generateWithCustomApi(prompt, profile, options = {}) {
+    validateCustomApiProfile(profile);
+    const payload = buildCustomApiPayload(prompt, profile, options);
 
     const response = await fetch(normalizeChatCompletionsUrl(profile.customBaseUrl), {
         method: 'POST',
@@ -842,6 +884,47 @@ async function generateWithCustomApi(prompt, profile, options = {}) {
 
     if (typeof text !== 'string' || !text.trim()) {
         throw new Error('自定义 API 没有返回可用文本。');
+    }
+
+    if (isLengthLimited(choice)) {
+        const actionName = options.actionName || '模型输出';
+        const lengthTip = options.lengthTip || '请缩短输入，或换用输出上限更高的模型。';
+        throw new Error(`${actionName}达到长度上限，结果可能被截断。${lengthTip}`);
+    }
+
+    throwIfResponseGuardCancelled(options.signal);
+    return text;
+}
+
+async function generateWithProxyApi(prompt, profile, options = {}) {
+    validateProxyProfile(profile);
+    const payload = buildCustomApiPayload(prompt, profile, options);
+    const response = await fetch(normalizeProxyUrl(profile.proxyBaseUrl, '/chat/completions'), {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            upstreamUrl: normalizeChatCompletionsUrl(profile.customBaseUrl),
+            apiKey: profile.customApiKey.trim(),
+            payload,
+        }),
+        signal: options.signal,
+    });
+
+    throwIfResponseGuardCancelled(options.signal);
+
+    if (!response.ok) {
+        const detail = await readApiError(response);
+        throw new Error(`代理 API 请求失败：${response.status} ${response.statusText}${detail ? ` — ${detail}` : ''}`);
+    }
+
+    const data = await response.json();
+    const choice = data?.choices?.[0];
+    const text = getChoiceText(choice);
+
+    if (typeof text !== 'string' || !text.trim()) {
+        throw new Error('代理 API 没有返回可用文本。');
     }
 
     if (isLengthLimited(choice)) {
@@ -886,6 +969,79 @@ async function fetchCustomModels(profile) {
         .sort((a, b) => a.localeCompare(b));
 }
 
+async function fetchProxyModels(profile) {
+    if (!profile.customBaseUrl.trim()) {
+        throw new Error('请先填写自定义 API 地址。');
+    }
+
+    if (!profile.proxyBaseUrl.trim()) {
+        throw new Error('请先填写本地代理地址。');
+    }
+
+    const response = await fetch(normalizeProxyUrl(profile.proxyBaseUrl, '/models'), {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            upstreamUrl: normalizeModelsUrl(profile.customBaseUrl),
+            apiKey: profile.customApiKey.trim(),
+        }),
+    });
+
+    if (!response.ok) {
+        const detail = await readApiError(response);
+        throw new Error(`代理获取模型失败：${response.status} ${response.statusText}${detail ? ` — ${detail}` : ''}`);
+    }
+
+    const data = await response.json();
+    const models = Array.isArray(data?.data)
+        ? data.data
+        : Array.isArray(data)
+            ? data
+            : [];
+
+    return models
+        .map((model) => typeof model === 'string' ? model : model?.id)
+        .filter((modelId) => typeof modelId === 'string' && modelId.trim())
+        .sort((a, b) => a.localeCompare(b));
+}
+
+async function testProxyConnection(profile) {
+    if (!profile.proxyBaseUrl.trim()) {
+        throw new Error('请先填写本地代理地址。');
+    }
+
+    const response = await fetch(normalizeProxyUrl(profile.proxyBaseUrl, '/health'), {
+        method: 'GET',
+    });
+
+    if (!response.ok) {
+        const detail = await readApiError(response);
+        throw new Error(`代理连接失败：${response.status} ${response.statusText}${detail ? ` — ${detail}` : ''}`);
+    }
+
+    return await response.json();
+}
+
+async function generateWithConfiguredApi(prompt, profile, options = {}) {
+    if (profile.apiMode === 'custom') {
+        return generateWithCustomApi(prompt, profile, options);
+    }
+
+    if (profile.apiMode === 'proxy') {
+        return generateWithProxyApi(prompt, profile, options);
+    }
+
+    return generateWithCurrentApi(prompt, options);
+}
+
+async function fetchConfiguredModels(profile) {
+    return profile.apiMode === 'proxy'
+        ? fetchProxyModels(profile)
+        : fetchCustomModels(profile);
+}
+
 async function runJudge(reply, options = {}) {
     const profile = getActiveProfile();
     const prompt = buildJudgePrompt({
@@ -893,9 +1049,10 @@ async function runJudge(reply, options = {}) {
         reply,
     });
 
-    const rawText = profile.apiMode === 'custom'
-        ? await generateWithCustomApi(prompt, profile, { maxTokens: 1024, signal: options.signal })
-        : await generateWithCurrentApi(prompt, { signal: options.signal });
+    const rawText = await generateWithConfiguredApi(prompt, profile, {
+        maxTokens: 1024,
+        signal: options.signal,
+    });
 
     throwIfResponseGuardCancelled(options.signal);
     return parseJudgeResult(rawText);
@@ -905,14 +1062,12 @@ async function runJudge(reply, options = {}) {
 async function runInduction({ exampleReply, moduleRequirement, signal }) {
     const profile = getActiveProfile();
     const prompt = buildInductionPrompt({ exampleReply, moduleRequirement });
-    const rawText = profile.apiMode === 'custom'
-        ? await generateWithCustomApi(prompt, profile, {
-            maxTokens: 4096,
-            actionName: '归纳结果',
-            lengthTip: '请缩短“正确回复样例”，或把样例里无关剧情删掉后再生成。',
-            signal,
-        })
-        : await generateWithCurrentApi(prompt, { signal });
+    const rawText = await generateWithConfiguredApi(prompt, profile, {
+        maxTokens: 4096,
+        actionName: '归纳结果',
+        lengthTip: '请缩短“正确回复样例”，或把样例里无关剧情删掉后再生成。',
+        signal,
+    });
     throwIfResponseGuardCancelled(signal);
     const result = stripCodeFence(rawText);
 
@@ -927,14 +1082,12 @@ async function runInduction({ exampleReply, moduleRequirement, signal }) {
 async function runRewrite({ reply, instruction, signal }) {
     const profile = getActiveProfile();
     const prompt = buildRewritePrompt({ reply, instruction });
-    const rawText = profile.apiMode === 'custom'
-        ? await generateWithCustomApi(prompt, profile, {
-            maxTokens: 8192,
-            actionName: '局部修改结果',
-            lengthTip: '请缩短最新回复或修改要求，或改用输出上限更高的模型。',
-            signal,
-        })
-        : await generateWithCurrentApi(prompt, { signal });
+    const rawText = await generateWithConfiguredApi(prompt, profile, {
+        maxTokens: 8192,
+        actionName: '局部修改结果',
+        lengthTip: '请缩短最新回复或修改要求，或改用输出上限更高的模型。',
+        signal,
+    });
     throwIfResponseGuardCancelled(signal);
     const result = stripCodeFence(rawText);
 
@@ -1010,11 +1163,13 @@ function describeMissing(result) {
     return `缺失：${result.missing.join('、')}`;
 }
 
-async function checkLatestMessage({ repair } = {}) {
+async function checkLatestMessage({ repair, auto = false } = {}) {
     const latest = getLatestAssistantMessage();
 
     if (!latest) {
-        toastr.warning('没有找到可检查的最新 AI 回复。');
+        if (!auto) {
+            toastr.warning('没有找到可检查的最新 AI 回复。');
+        }
         return;
     }
 
@@ -1023,9 +1178,10 @@ async function checkLatestMessage({ repair } = {}) {
         document.querySelector('#response_guard_check_and_fix'),
         document.querySelector('#response_guard_magic_fix'),
     ];
-    const operationLabel = repair ? '格式修复' : '格式检查';
+    const operationLabel = auto ? '自动格式修复' : repair ? '格式修复' : '格式检查';
     const operation = beginResponseGuardGeneration(operationLabel, {
         controls: buttons,
+        silentBusy: auto,
     });
 
     if (!operation) {
@@ -1033,13 +1189,17 @@ async function checkLatestMessage({ repair } = {}) {
     }
 
     try {
-        toastr.info(`正在用「${getActiveProfile().name}」检查最新回复…`);
+        if (!auto) {
+            toastr.info(`正在用「${getActiveProfile().name}」检查最新回复…`);
+        }
 
         const result = await runJudge(latest.message.mes, { signal: operation.signal });
         throwIfResponseGuardCancelled(operation.signal);
 
         if (result.complete) {
-            toastr.success('最新回复已满足格式规范。');
+            if (!auto) {
+                toastr.success('最新回复已满足格式规范。');
+            }
             return;
         }
 
@@ -1049,13 +1209,13 @@ async function checkLatestMessage({ repair } = {}) {
         }
 
         if (!result.appendText) {
-            toastr.warning(`${describeMissing(result)} 但模型没有给出可追加文本。`);
+            toastr.warning(`${auto ? '自动格式修复发现' : ''}${describeMissing(result)} 但模型没有给出可追加文本。`);
             return;
         }
 
         throwIfResponseGuardCancelled(operation.signal);
         await appendMissingText(latest.index, latest.message, result.appendText);
-        toastr.success(`已补齐最新回复。${describeMissing(result)}`);
+        toastr.success(`${auto ? '自动格式修复已补齐最新回复。' : '已补齐最新回复。'}${describeMissing(result)}`);
     } catch (error) {
         if (isCancellationError(error)) {
             return;
@@ -1067,6 +1227,130 @@ async function checkLatestMessage({ repair } = {}) {
         endResponseGuardGeneration(operation);
     }
 }
+
+function getContextEventTypes() {
+    const context = getContext();
+    return context.eventTypes || context.event_types || {};
+}
+
+function getLatestAssistantMessageSignature(latest = getLatestAssistantMessage()) {
+    if (!latest?.message) {
+        return '';
+    }
+
+    const message = latest.message;
+    const text = String(message.mes || '');
+    const swipeId = Number.isInteger(message.swipe_id) ? message.swipe_id : '';
+    return `${latest.index}:${swipeId}:${text.length}:${text.slice(-160)}`;
+}
+
+function isAutoRepairRunnable() {
+    return Boolean(getSettings().autoRepairEnabled)
+        && !responseGuardGeneration.active
+        && Date.now() >= autoRepairRuntime.suppressUntil;
+}
+
+async function autoRepairLatestMessage() {
+    autoRepairRuntime.timer = null;
+
+    if (!isAutoRepairRunnable() || autoRepairRuntime.stopped) {
+        return;
+    }
+
+    const latest = getLatestAssistantMessage();
+    const signature = getLatestAssistantMessageSignature(latest);
+
+    if (!signature
+        || signature === autoRepairRuntime.startSignature
+        || signature === autoRepairRuntime.lastProcessedSignature
+    ) {
+        return;
+    }
+
+    autoRepairRuntime.lastProcessedSignature = signature;
+    await checkLatestMessage({ repair: true, auto: true });
+    autoRepairRuntime.lastProcessedSignature = getLatestAssistantMessageSignature() || signature;
+}
+
+function scheduleAutoRepair() {
+    if (autoRepairRuntime.timer) {
+        clearTimeout(autoRepairRuntime.timer);
+    }
+
+    autoRepairRuntime.timer = setTimeout(() => {
+        autoRepairLatestMessage().catch((error) => {
+            console.error('[Response Guard] Auto repair failed:', error);
+        });
+    }, 700);
+}
+
+function bindAutoRepairEvents() {
+    if (bindAutoRepairEvents.bound) {
+        return;
+    }
+
+    bindAutoRepairEvents.bound = true;
+
+    const { eventSource } = getContext();
+    const eventTypes = getContextEventTypes();
+
+    if (eventTypes.GENERATION_STARTED) {
+        eventSource.on(eventTypes.GENERATION_STARTED, () => {
+            autoRepairRuntime.stopped = false;
+            autoRepairRuntime.startSignature = getLatestAssistantMessageSignature();
+            autoRepairRuntime.generationStartedAt = Date.now();
+        });
+    }
+
+    if (eventTypes.GENERATION_STOPPED) {
+        eventSource.on(eventTypes.GENERATION_STOPPED, () => {
+            autoRepairRuntime.stopped = true;
+        });
+    }
+
+    if (eventTypes.GENERATION_ENDED) {
+        eventSource.on(eventTypes.GENERATION_ENDED, () => {
+            if (autoRepairRuntime.stopped) {
+                autoRepairRuntime.stopped = false;
+                return;
+            }
+
+            if (!isAutoRepairRunnable()) {
+                return;
+            }
+
+            scheduleAutoRepair();
+        });
+    }
+
+    if (eventTypes.MESSAGE_RECEIVED) {
+        eventSource.on(eventTypes.MESSAGE_RECEIVED, () => {
+            if (!isAutoRepairRunnable() || autoRepairRuntime.stopped) {
+                return;
+            }
+
+            autoRepairRuntime.messageReceivedAt = Date.now();
+            scheduleAutoRepair();
+        });
+    }
+
+    if (eventTypes.CHARACTER_MESSAGE_RENDERED) {
+        eventSource.on(eventTypes.CHARACTER_MESSAGE_RENDERED, () => {
+            if (!isAutoRepairRunnable() || autoRepairRuntime.stopped) {
+                return;
+            }
+
+            const now = Date.now();
+            const recentlyReceivedMessage = now - autoRepairRuntime.messageReceivedAt < 10000;
+            const recentlyStartedGeneration = now - autoRepairRuntime.generationStartedAt < 20000;
+
+            if (recentlyReceivedMessage || recentlyStartedGeneration) {
+                scheduleAutoRepair();
+            }
+        });
+    }
+}
+
 
 async function copyTextToClipboard(text) {
     if (navigator.clipboard?.writeText) {
@@ -2178,8 +2462,10 @@ function exposeGlobalApi() {
 
 function syncCustomApiVisibility() {
     const profile = getActiveProfile();
-    const root = document.querySelector('#response_guard_custom_api_fields');
-    root?.classList.toggle('hidden', profile.apiMode !== 'custom');
+    const customRoot = document.querySelector('#response_guard_custom_api_fields');
+    const proxyRoot = document.querySelector('#response_guard_proxy_api_fields');
+    customRoot?.classList.toggle('hidden', profile.apiMode === 'current');
+    proxyRoot?.classList.toggle('hidden', profile.apiMode !== 'proxy');
 }
 
 function populateProfilePicker() {
@@ -2245,11 +2531,14 @@ function syncCharacterBindingText() {
 
 function syncFieldsFromActiveProfile() {
     const profile = getActiveProfile();
+    const settings = getSettings();
 
     const profileNameEl = document.querySelector('#response_guard_profile_name');
     const rulesEl = document.querySelector('#response_guard_rules');
+    const autoRepairEl = document.querySelector('#response_guard_auto_repair_enabled');
     const apiModeEl = document.querySelector('#response_guard_api_mode');
     const temperatureEl = document.querySelector('#response_guard_temperature');
+    const proxyBaseUrlEl = document.querySelector('#response_guard_proxy_base_url');
     const baseUrlEl = document.querySelector('#response_guard_custom_base_url');
     const modelEl = document.querySelector('#response_guard_custom_model');
     const apiKeyEl = document.querySelector('#response_guard_custom_api_key');
@@ -2261,8 +2550,10 @@ function syncFieldsFromActiveProfile() {
 
     if (profileNameEl) profileNameEl.value = profile.name;
     if (rulesEl) rulesEl.value = profile.rules;
+    if (autoRepairEl) autoRepairEl.checked = Boolean(settings.autoRepairEnabled);
     if (apiModeEl) apiModeEl.value = profile.apiMode;
     if (temperatureEl) temperatureEl.value = String(profile.temperature);
+    if (proxyBaseUrlEl) proxyBaseUrlEl.value = profile.proxyBaseUrl;
     if (baseUrlEl) baseUrlEl.value = profile.customBaseUrl;
     if (modelEl) modelEl.value = profile.customModel;
     if (apiKeyEl) apiKeyEl.value = profile.customApiKey;
@@ -2297,8 +2588,11 @@ function bindSettingsEvents() {
     const unbindProfileEl = document.querySelector('#response_guard_unbind_profile');
 
     const rulesEl = document.querySelector('#response_guard_rules');
+    const autoRepairEl = document.querySelector('#response_guard_auto_repair_enabled');
     const apiModeEl = document.querySelector('#response_guard_api_mode');
     const temperatureEl = document.querySelector('#response_guard_temperature');
+    const proxyBaseUrlEl = document.querySelector('#response_guard_proxy_base_url');
+    const testProxyEl = document.querySelector('#response_guard_test_proxy');
     const baseUrlEl = document.querySelector('#response_guard_custom_base_url');
     const modelEl = document.querySelector('#response_guard_custom_model');
     const apiKeyEl = document.querySelector('#response_guard_custom_api_key');
@@ -2325,8 +2619,11 @@ function bindSettingsEvents() {
         || !bindProfileEl
         || !unbindProfileEl
         || !rulesEl
+        || !autoRepairEl
         || !apiModeEl
         || !temperatureEl
+        || !proxyBaseUrlEl
+        || !testProxyEl
         || !baseUrlEl
         || !modelEl
         || !apiKeyEl
@@ -2444,6 +2741,12 @@ function bindSettingsEvents() {
         saveSettings();
     });
 
+    autoRepairEl.addEventListener('change', () => {
+        settings.autoRepairEnabled = Boolean(autoRepairEl.checked);
+        saveSettings();
+        toastr.info(settings.autoRepairEnabled ? '已开启自动格式修复。' : '已关闭自动格式修复。');
+    });
+
     apiModeEl.addEventListener('change', () => {
         getActiveProfile().apiMode = apiModeEl.value;
         syncCustomApiVisibility();
@@ -2453,6 +2756,25 @@ function bindSettingsEvents() {
     temperatureEl.addEventListener('change', () => {
         getActiveProfile().temperature = Number(temperatureEl.value) || DEFAULT_PROFILE.temperature;
         saveSettings();
+    });
+
+    proxyBaseUrlEl.addEventListener('input', () => {
+        getActiveProfile().proxyBaseUrl = proxyBaseUrlEl.value;
+        saveSettings();
+    });
+
+    testProxyEl.addEventListener('click', async () => {
+        testProxyEl.setAttribute('disabled', 'disabled');
+
+        try {
+            await testProxyConnection(getActiveProfile());
+            toastr.success('本地代理连接正常。');
+        } catch (error) {
+            console.error('[Response Guard] Failed to connect to proxy:', error);
+            toastr.error(error?.message || '本地代理连接失败。');
+        } finally {
+            testProxyEl.removeAttribute('disabled');
+        }
     });
 
     baseUrlEl.addEventListener('input', () => {
@@ -2518,7 +2840,7 @@ function bindSettingsEvents() {
 
         try {
             toastr.info('正在获取模型列表…');
-            const models = await fetchCustomModels(getActiveProfile());
+            const models = await fetchConfiguredModels(getActiveProfile());
 
             if (!models.length) {
                 populateModelPicker([]);
@@ -2562,6 +2884,7 @@ async function init() {
     document.querySelector('#extensions_settings2')?.insertAdjacentHTML('beforeend', html);
     bindSettingsEvents();
     bindSendButtonCancelEvent();
+    bindAutoRepairEvents();
     ensureMagicMenuItems();
     bindMagicMenuEvents();
     exposeGlobalApi();

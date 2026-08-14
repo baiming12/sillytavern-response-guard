@@ -189,6 +189,7 @@
               <select id="response_guard_api_mode" class="text_pole">
                 <option value="current">使用酒馆当前 API</option>
                 <option value="custom">自定义 OpenAI-compatible API</option>
+                <option value="proxy">本地代理 OpenAI-compatible API</option>
               </select>
             </div>
 
@@ -208,6 +209,23 @@
           </div>
 
           <div id="response_guard_custom_api_fields" class="response-guard-custom-api hidden">
+            <div id="response_guard_proxy_api_fields" class="response-guard-proxy-api hidden">
+              <label for="response_guard_proxy_base_url">
+                <span>本地代理地址</span>
+              </label>
+              <div class="response-guard-model-row">
+                <input
+                  id="response_guard_proxy_base_url"
+                  class="text_pole"
+                  type="text"
+                  placeholder="http://127.0.0.1:39125"
+                />
+                <button id="response_guard_test_proxy" class="menu_button response-guard-btn" type="button">
+                  测试代理
+                </button>
+              </div>
+            </div>
+
             <label for="response_guard_custom_base_url">
               <span>自定义 API 地址</span>
             </label>
@@ -249,6 +267,14 @@
           </div>
         </div>
       </details>
+
+      <label class="response-guard-toggle" for="response_guard_auto_repair_enabled">
+        <input id="response_guard_auto_repair_enabled" type="checkbox" />
+        <span class="response-guard-toggle-body">
+          <strong>自动格式修复</strong>
+          <small>剧情生成结束后自动检查最新回复；缺少附属模块时追加到当前回复末尾。</small>
+        </span>
+      </label>
 
       <div class="response-guard-actions response-guard-main-actions">
         <button id="response_guard_check_only" class="menu_button response-guard-btn" type="button">
