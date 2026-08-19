@@ -1,0 +1,12 @@
+{
+  "name": "sillytavern-response-guard-zeabur",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node zeabur-entry.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

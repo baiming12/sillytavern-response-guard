@@ -1,0 +1,32 @@
+Response Guard - Zeabur 部署补丁
+================================
+
+基于 GitHub 分支：
+baiming12/sillytavern-response-guard @ 20260814
+
+这份补丁不修改原 response-guard-proxy.mjs，只新增两个文件：
+1. package.json
+2. zeabur-entry.mjs
+
+推荐操作：
+1. 在 GitHub 上从 20260814 分支创建一个新分支，例如 zeabur-proxy。
+2. 将 package.json 和 zeabur-entry.mjs 上传到新分支的仓库根目录。
+3. 不要删除原来的 response-guard-proxy.mjs。
+4. 在 Zeabur 从这个 GitHub 仓库的新分支部署。
+5. 给代理服务设置环境变量：
+   RESPONSE_GUARD_ALLOWED_ORIGINS=https://你的SillyTavern域名
+   注意不要在域名末尾加 /
+6. 给代理服务绑定/生成 HTTPS 域名。
+7. 浏览器访问：
+   https://你的代理域名/health
+   正常应返回：
+   {"ok":true,"service":"response-guard-proxy"}
+8. 在 SillyTavern 的 Response Guard 设置中，把代理地址从
+   http://127.0.0.1:39125
+   改成
+   https://你的代理域名
+
+说明：
+- Zeabur 会提供 PORT 环境变量；zeabur-entry.mjs 会监听 0.0.0.0:$PORT。
+- 原来的本地/Termux 启动方式不受影响。
+- 目前仍使用原项目的 CORS/Origin 限制；公网部署后建议后续再增加独立代理 Token 鉴权。
